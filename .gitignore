@@ -28,4 +28,5 @@ Thumbs.db
 ## Telethon / Session files
 *.session
 *.session-journal
+*.lock
 AUTH_ERROR.flag

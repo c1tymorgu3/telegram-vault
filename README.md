@@ -38,7 +38,8 @@ Actionable intelligence with KPIs, message velocity charts, active users, and ta
 ## Installation & Setup
 
 **1. Prerequisites**
-- Python 3.9+ (3.12 recommended)
+- Python 3.10+ (3.14 tested). SQLAlchemy must be >=2.0.36: 2.0.30 crashes on Python 3.13+
+  (`TypeError: Can't replace canonical symbol for '__firstlineno__'`).
 - PostgreSQL Server
 - Telegram API ID and API Hash (Obtain from [my.telegram.org](https://my.telegram.org))
 
@@ -88,6 +89,33 @@ source venv/bin/activate
 uvicorn app:app --host 0.0.0.0 --port 8000 &
 python3 bot.py &
 ```
+
+---
+
+## Ban safety
+
+A listener is not banned for reading, it is banned for looking like a fleet. Every
+rule below is enforced in `bot.py`, and breaking one is what actually costs accounts:
+
+- **One account, one `api_id`, one egress IP.** Accounts sharing an `api_id` and an
+  IP are clustered by Telegram; when one gets flagged, the cluster goes with it. Set
+  `ACCOUNT=alt1` and `API_ID_ALT1` / `API_HASH_ALT1`, one `SESSION_NAME`, one
+  `PROXY` per account.
+- **One process per session.** `AuthKeyDuplicatedError` means two processes touched
+  the same `.session`. Telegram revokes the key instantly. `bot.py` takes a file lock
+  (`*.lock`) and refuses to start a second copy.
+- **No automatic login.** Asking for a code over and over is a number-level ban
+  trigger. `ALLOW_NEW_LOGIN=0` by default: log in once from a normal client, or set
+  it to `1` for one deliberate first run.
+- **Real client identity.** `DEVICE_MODEL` / `SYSTEM_VERSION` / `APP_VERSION` are
+  filled in; the default `Telethon` banner is the easiest unofficial-client
+  fingerprint.
+- **No per-message API calls.** Entities come from the update cache. Startup reads
+  at most 100 dialogs and `catch_up` is off, so a restart does not replay a backlog
+  of hundreds of messages at once.
+- **Warm the number up.** 7-10 days of normal use before attaching a userbot.
+
+Read-only by design: `bot.py` never sends, joins, or invites. Keep it that way.
 
 ---
 
