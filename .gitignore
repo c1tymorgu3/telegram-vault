@@ -29,4 +29,6 @@ Thumbs.db
 *.session
 *.session-journal
 *.lock
+*.db
+*.db-journal
 AUTH_ERROR.flag

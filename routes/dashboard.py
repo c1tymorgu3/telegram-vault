@@ -98,13 +98,13 @@ async def get_dashboard_stats(request: Request, db: AsyncSession = Depends(get_d
         hr_val = row[0]
         if isinstance(hr_val, str):
             hr_val = datetime.strptime(hr_val, "%Y-%m-%d %H:%M:%S")
-        tr_hour = (hr_val + timedelta(hours=3)).strftime("%H:%M")
+        tr_hour = (hr_val + timedelta(hours=3)).strftime("%H:00")
         velocity_map[tr_hour] = row[1]
 
     velocity = []
     for h in range(24, 0, -1):
         slot_utc = now - timedelta(hours=h)
-        tr_hour = (slot_utc + timedelta(hours=3)).strftime("%H:%M")
+        tr_hour = (slot_utc + timedelta(hours=3)).strftime("%H:00")
         velocity.append({"hour": tr_hour, "count": velocity_map.get(tr_hour, 0)})
 
     top_groups_stmt = (
@@ -127,7 +127,10 @@ async def get_dashboard_stats(request: Request, db: AsyncSession = Depends(get_d
     top_users_rows = (await db.execute(top_users_stmt)).all()
     top_users = [{"username": r[0] or "?", "name": r[1] or "?", "user_id": r[2], "count": r[3]} for r in top_users_rows]
 
+    storage = {"sqlite": "SQLite", "postgresql": "PostgreSQL"}.get(dialect, dialect)
+
     return {
+        "storage": storage,
         "total": total,
         "total_deleted": total_deleted,
         "last_hour": last_hour,

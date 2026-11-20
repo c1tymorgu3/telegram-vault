@@ -50,5 +50,14 @@ PROXY = os.getenv("PROXY", "")
 # from a normal client, or set ALLOW_NEW_LOGIN=1 for a single first run only.
 ALLOW_NEW_LOGIN = os.getenv("ALLOW_NEW_LOGIN", "0") == "1"
 
+# Session cookie over HTTPS only. Keep 1 in production; set 0 for local
+# http://127.0.0.1 runs, otherwise the login cookie is never sent back and the
+# dashboard loops on /login.
+SESSION_HTTPS_ONLY = os.getenv("SESSION_HTTPS_ONLY", "1") == "1"
+
+# Behind a reverse proxy, trust X-Forwarded-* so the rate limiter sees the real
+# client IP instead of the proxy's.
+TRUST_PROXY = os.getenv("TRUST_PROXY", "0") == "1"
+
 # Local dashboard endpoint that bot.py forwards live events to.
 BROADCAST_URL = os.getenv("BROADCAST_URL", "http://127.0.0.1:8000/internal/broadcast")

@@ -13,11 +13,11 @@ async def security_headers(request: Request, call_next):
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' https://js.hcaptcha.com https://*.hcaptcha.com https://cdn.jsdelivr.net; "
+        "script-src 'self' 'unsafe-inline' https://js.hcaptcha.com https://*.hcaptcha.com; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "font-src 'self' https://fonts.gstatic.com; "
         "frame-src https://newassets.hcaptcha.com https://*.hcaptcha.com; "
-        "connect-src 'self' https://api.hcaptcha.com; "
+        "connect-src 'self' https://api.hcaptcha.com https://*.hcaptcha.com; "
         "img-src 'self' data:;"
     )
     return response

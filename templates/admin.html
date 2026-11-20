@@ -143,7 +143,7 @@
                         <th>Date/Time</th>
                         <th>Status</th>
                         <th>IP Address</th>
-                        <th>Password Attempt</th>
+                        <th>Pw Fingerprint</th>
                         <th>Result</th>
                         <th>Browser / Device</th>
                     </tr>
@@ -214,7 +214,7 @@
                                 <span class="real">${esc(l.ip)}</span>
                             </div>
                         </td>
-                        <td class="cell-pw">${esc(l.password_tried)}</td>
+                        <td class="cell-pw">${esc(l.pw_fingerprint)}</td>
                         <td class="cell-reason">${esc(l.reason)}</td>
                         <td class="ua-cell">
                             <div class="ua-browser">${esc(ua.browser)}</div>

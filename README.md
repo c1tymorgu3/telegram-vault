@@ -37,6 +37,39 @@ Actionable intelligence with KPIs, message velocity charts, active users, and ta
 
 ## Installation & Setup
 
+### Local install (Windows)
+
+Use **Python 3.12**, not 3.13/3.14: the pinned stack (`pydantic-core`, `asyncpg`)
+has no wheels there and the build fails without a C toolchain.
+
+```bat
+py -3.12 -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+copy .env.example .env
+```
+
+`.env` for a local run (SQLite, plain HTTP on loopback):
+
+```env
+DATABASE_URL=sqlite+aiosqlite:///./telegramlogs.db
+DASHBOARD_PASSWORD=pick-something
+SESSION_SECRET=paste-a-random-32-char-string
+SESSION_HTTPS_ONLY=0
+```
+
+`SESSION_HTTPS_ONLY=0` matters on `http://127.0.0.1`: with the default `1` the
+browser never sends the session cookie back and every page bounces to `/login`.
+
+Then `start.bat`, or manually:
+
+```bat
+.venv\Scripts\python.exe -m uvicorn app:app --host 127.0.0.1 --port 8000
+.venv\Scripts\python.exe bot.py
+```
+
+Chart.js is vendored in `static/vendor/`, so the panel renders with no internet
+access.
+
 **1. Prerequisites**
 - Python 3.10+ (3.14 tested). SQLAlchemy must be >=2.0.36: 2.0.30 crashes on Python 3.13+
   (`TypeError: Can't replace canonical symbol for '__firstlineno__'`).

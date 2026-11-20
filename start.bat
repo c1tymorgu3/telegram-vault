@@ -1,59 +1,47 @@
 @echo off
-setlocal
-title Telegram Vault Launcher - DEBUG MODE
-echo ==============================================
-echo  Telegram Vault - DEBUG Launcher
-echo ==============================================
+setlocal enabledelayedexpansion
+title Telegram Vault
+cd /d "%~dp0"
 
-echo [DEBUG] Step 1: Current directory: %CD%
-echo [INFO] Press any key to continue...
-pause
+echo ==========================================
+echo  Telegram Vault
+echo ==========================================
 
-:: venv check
-if exist venv\Scripts\activate.bat (
-    echo [DEBUG] Step 2: venv found, activating...
-    set "ACTIVATE_CMD=call venv\Scripts\activate.bat &"
-) else (
-    echo [DEBUG] Step 2: venv NOT FOUND! Attempting to use system Python.
-    set "ACTIVATE_CMD="
-)
-pause
-
-echo [DEBUG] Step 3: Python check...
-python --version >nul 2>&1
-if %ERRORLEVEL% NEQ 0 (
-    echo [ERROR] Python command is not working! 
-    echo Please make sure Python is installed and added to PATH.
+if not exist ".env" (
+    echo [HATA] .env bulunamadi.
+    echo        .env.example dosyasini .env olarak kopyalayip doldur.
     pause
-    exit /b
+    exit /b 1
 )
-echo [OK] Python found.
-pause
 
-echo [DEBUG] Step 4: Starting FastAPI Server...
-start "FastAPI Server" cmd /k "%ACTIVATE_CMD% python -m uvicorn app:app --host 0.0.0.0 --port 8000"
-if %ERRORLEVEL% NEQ 0 (
-    echo [ERROR] Failed to open FastAPI window!
+if exist ".venv\Scripts\python.exe" (
+    set "PY=.venv\Scripts\python.exe"
 ) else (
-    echo [OK] FastAPI window triggered.
+    echo [HATA] .venv bulunamadi. Once su komutu calistir:
+    echo        py -3.12 -m venv .venv
+    echo        .venv\Scripts\python.exe -m pip install -r requirements.txt
+    pause
+    exit /b 1
 )
-pause
 
-echo [DEBUG] Step 5: Waiting (2 sec)...
-timeout /t 2 /nobreak >nul
-
-echo [DEBUG] Step 6: Starting Telegram Bot...
-start "Telegram Bot" cmd /k "%ACTIVATE_CMD% python bot.py"
-if %ERRORLEVEL% NEQ 0 (
-    echo [ERROR] Failed to open Bot window!
-) else (
-    echo [OK] Bot window triggered.
+if not exist "telegramlogs.db" if not defined DATABASE_URL (
+    echo [BILGI] SQLite kullanilacak ^(telegramlogs.db^).
 )
-pause
+
+echo [1/2] Panel baslatiliyor - http://127.0.0.1:8000
+start "Vault Panel" cmd /k "%PY% -m uvicorn app:app --host 127.0.0.1 --port 8000"
+
+timeout /t 3 /nobreak >nul
+
+echo [2/2] Telegram dinleyici baslatiliyor
+start "Vault Bot" cmd /k "%PY% bot.py"
 
 echo.
-echo ==============================================
-echo [DEBUG] Launcher sequence completed. 
-echo If the windows have opened, you can close this screen.
-echo ==============================================
-pause
+echo Panel : http://127.0.0.1:8000
+echo Bot   : ayri pencerede calisiyor, kapatmak icin o pencereyi kapat.
+echo.
+echo Not: bot.py ayni session ile ikinci kez baslatilirsa kendini reddeder.
+echo      Bu bilerek boyle - iki surec ayni session'a dokunursa Telegram
+echo      auth key'i iptal eder.
+echo ==========================================
+timeout /t 5 /nobreak >nul

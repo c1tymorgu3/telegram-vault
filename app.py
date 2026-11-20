@@ -19,7 +19,8 @@ logging.basicConfig(
 
 app = FastAPI(title="Sredinom", docs_url=None, redoc_url=None, openapi_url=None)
 
-app.add_middleware(SessionMiddleware, secret_key=config.SESSION_SECRET, max_age=1800, https_only=True, same_site='strict')
+app.add_middleware(SessionMiddleware, secret_key=config.SESSION_SECRET, max_age=1800,
+                    https_only=config.SESSION_HTTPS_ONLY, same_site='strict')
 
 app.middleware("http")(security_headers)
 

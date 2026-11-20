@@ -7,7 +7,7 @@
     <link rel="icon" type="image/svg+xml" href="/static/logo.svg">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="/static/vendor/chart.umd.min.js" defer></script>
     <style>
         :root {
             --bg: #080a0f;
@@ -151,6 +151,36 @@
 
         .skeleton { background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 50%, var(--surface-2) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 4px; }
         @keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+        a:focus-visible, button:focus-visible {
+            outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px;
+        }
+
+        /* ---- Responsive ---- */
+        @media (max-width: 1180px) {
+            .main-grid { grid-template-columns: minmax(0, 1fr); }
+            .bottom-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .bottom-grid > :last-child { grid-column: 1 / -1; }
+        }
+        @media (max-width: 860px) {
+            .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+        @media (max-width: 760px) {
+            .header { height: auto; min-height: 56px; padding: 10px 16px; flex-wrap: wrap; gap: 8px; }
+            .page-title, .last-updated { display: none; }
+            .container { padding: 16px; }
+            .kpi-card { padding: 16px; }
+            .kpi-value { font-size: 26px; }
+            .bottom-grid { grid-template-columns: minmax(0, 1fr); }
+            .chart-wrap { height: 180px; }
+            .rank-name { max-width: 130px; }
+        }
+        @media (max-width: 420px) {
+            .kpi-grid { grid-template-columns: minmax(0, 1fr); }
+            .header-right { width: 100%; justify-content: space-between; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .live-dot, .skeleton { animation: none; }
+        }
     </style>
 </head>
 <body>
@@ -259,7 +289,7 @@
                     </div>
                     <div class="alert-body">
                         <div class="alert-title">Database</div>
-                        <div class="alert-sub">PostgreSQL — Connected</div>
+                        <div class="alert-sub" id="stat-storage">—</div>
                     </div>
                     <div class="alert-val text-blue">●&nbsp;Active</div>
                 </div>
@@ -321,6 +351,12 @@
 <script>
 let velocityChart = null;
 
+// Chat titles and usernames come from Telegram users, so they are untrusted
+// text: never interpolate them into innerHTML directly.
+const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
+));
+
 function updateClock() {
     const now = new Date();
     const tr = now.toLocaleTimeString('tr-TR', {hour:'2-digit', minute:'2-digit', second:'2-digit', timeZone:'Europe/Istanbul'});
@@ -349,6 +385,7 @@ async function loadDashboard() {
         document.getElementById('stat-velocity').textContent = `${d.last_hour}/h`;
         document.getElementById('stat-del-group-name').textContent = d.top_deleted_group.name;
         document.getElementById('stat-del-group-count').textContent = d.top_deleted_group.count + ' deleted';
+        document.getElementById('stat-storage').textContent = (d.storage || 'Database') + ' — connected';
 
         // Last updated
         document.getElementById('last-updated').textContent = 'Updated: ' + d.generated_at;
@@ -406,7 +443,7 @@ async function loadDashboard() {
             <li class="rank-item">
                 <div class="rank-num">#${i+1}</div>
                 <div class="rank-bar-wrap">
-                    <div class="rank-name">${g.name}</div>
+                    <div class="rank-name">${esc(g.name)}</div>
                     <div class="rank-bar-bg"><div class="rank-bar-fill" style="width:${(g.count/maxG*100).toFixed(0)}%; background:var(--yellow);"></div></div>
                 </div>
                 <div class="rank-count" style="color:var(--yellow)">${g.count}</div>
@@ -418,8 +455,8 @@ async function loadDashboard() {
             <li class="rank-item">
                 <div class="rank-num">#${i+1}</div>
                 <div class="rank-bar-wrap">
-                    <div class="rank-name">@${u.username}</div>
-                    <div class="rank-sub">${u.name}</div>
+                    <div class="rank-name">@${esc(u.username)}</div>
+                    <div class="rank-sub">${esc(u.name)}</div>
                     <div class="rank-bar-bg"><div class="rank-bar-fill" style="width:${(u.count/maxU*100).toFixed(0)}%;"></div></div>
                 </div>
                 <div class="rank-count">${u.count}</div>

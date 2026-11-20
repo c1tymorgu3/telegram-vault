@@ -34,14 +34,28 @@ def record_attempt(ip: str):
     login_attempts[ip].append(time.time())
 
 
-def log_auth_event(ip: str, user_agent: str, password: str, success: bool, reason: str = ""):
+def password_fingerprint(value: str) -> str:
+    """Identify a repeated wrong password without storing the password.
+
+    The audit log used to keep the raw string a visitor typed, which turns the
+    auth log into a credential dump the moment someone fat-fingers a real
+    password. A truncated digest plus its length is enough to spot the same
+    attempt coming back, and is not reversible.
+    """
+    if not value:
+        return "—"
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:10]
+    return f"{digest} ({len(value)} ch)"
+
+
+def log_auth_event(ip: str, user_agent: str, attempt, success: bool, reason: str = ""):
     ip_hash = hashlib.sha256(ip.encode()).hexdigest()[:12]
     audit_log.insert(0, {
         "time": (datetime.now(timezone.utc) + timedelta(hours=3)).isoformat(),
         "ip": ip,
         "ip_hash": ip_hash,
-        "user_agent": user_agent,
-        "password_tried": password,
+        "user_agent": (user_agent or "Unknown")[:200],
+        "pw_fingerprint": "—" if success else password_fingerprint(attempt),
         "success": success,
         "reason": reason
     })
@@ -113,7 +127,7 @@ async def login_submit(request: Request, password: str = Form(...)):
         request.session["login_time"] = datetime.now().isoformat()
         request.session["ip"] = client_ip
         login_attempts.pop(client_ip, None)
-        log_auth_event(client_ip, ua, "••••••", True, "Success")
+        log_auth_event(client_ip, ua, None, True, "Success")
         return RedirectResponse(url="/", status_code=302)
     else:
         record_attempt(client_ip)

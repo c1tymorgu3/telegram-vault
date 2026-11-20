@@ -152,6 +152,10 @@
         
         .tag-deleted { 
             display: inline-block; 
+            max-width: 100%;
+            white-space: normal;
+            word-break: break-word;
+            line-height: 1.4;
             background: rgba(220, 38, 38, 0.2); 
             color: #ef4444; 
             border: 1px solid rgba(220, 38, 38, 0.4);
@@ -239,9 +243,20 @@
 
         @media (max-width: 768px) {
             .header { flex-direction: column; align-items: flex-start; gap: 16px; }
-            .header-right { width: 100%; justify-content: space-between; }
+            .header-right { width: 100%; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
             .detail-grid { grid-template-columns: 1fr; }
             .col-time, .col-group { display: none; }
+        }
+        @media (max-width: 480px) {
+            .header-right { justify-content: flex-start; gap: 8px; }
+            .stat { text-align: left; }
+            .stat-value { font-size: 20px; }
+            .btn-logout { padding: 5px 10px; font-size: 11px; }
+            .filters { gap: 8px; }
+            .payload-box { max-height: 40vh; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .tag-deleted, .badge::before { animation: none; }
         }
     </style>
 </head>
@@ -594,7 +609,7 @@
                     rows.forEach(r => {
                         const contentTd = r.querySelector('.cell-content');
                         if (contentTd && !contentTd.innerHTML.includes('tag-deleted')) {
-                            contentTd.innerHTML = `<span class="tag-deleted">🔴 SİLİNDİ - ŞÜPHELİ</span><br>` + contentTd.innerHTML;
+                            contentTd.innerHTML = `<span class="tag-deleted">🔴 DELETED - SUSPICIOUS</span><br>` + contentTd.innerHTML;
                         }
                     });
                     
