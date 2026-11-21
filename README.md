@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="static/logo-mark.png" alt="Telegram Vault" width="300">
+  <img src="static/logo-mark.png" alt="Telegram Vault" width="360">
 
   # Telegram Vault
 
@@ -25,7 +25,7 @@ Searchable log of every message, deleted ones included.
 **Digests**  
 Two-hour segments rolled into a daily brief: active sectors, unmet demand.
 
-<img src="static/screenshot_digest.png" alt="Digest" width="100%">
+<img src="static/screenshot_digest.png" alt="Digest" width="460">
 
 **Actor dossiers**  
 Sector history, self-disclosed facts and hearsay for any Telegram id, each claim carrying its message id.
