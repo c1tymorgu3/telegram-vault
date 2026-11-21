@@ -11,39 +11,53 @@
   ![Telethon](https://img.shields.io/badge/Telethon-1.36.0-2CA5E0?style=flat-square&logo=telegram)
   ![Status](https://img.shields.io/badge/Status-Active-success?style=flat-square)
 
-  *Reads every message in your chats, keeps it in a searchable archive, and turns it into evidence-backed briefs — sector by sector, actor by actor.*
+  *Reads every message in your chats, keeps it in a searchable archive, and turns it into briefs where every claim carries its message id.*
 </div>
 
 ---
 
+## What it does
+
+A userbot sits on one Telegram account and writes every message it sees into a
+database. A web panel reads it: search, per-sender profiles, charts, CSV export.
+The account never sends anything.
+
+**Digests.** Every two hours new messages are grouped per chat and extracted into
+a JSON record: sectors in play, what people asked for, who was active. At midnight
+those records become one daily brief. Every claim carries the message ids it came
+from, and those ids are checked against the archive before saving, so a citation
+the model invented shows up as a shortfall in the count.
+
+**Actor dossiers.** Ask for a profile of a Telegram id and the model reads only
+that account's messages: sectors it worked in and when, what it said about itself,
+what it repeated from others. Nothing is generated until you press the button.
+
+`LLM_PROVIDER` in `.env` switches between opencode, OpenRouter, OpenAI, DeepSeek,
+Groq or any OpenAI-compatible endpoint.
+
+---
+
+## Screenshots
 
 **Live archive**  
-Searchable log of every message, deleted ones included.
+Every message, deleted ones included.
 
 <img src="static/screenshot_log.png" alt="Live archive" width="100%">
 
 **Digests**  
-Two-hour segments rolled into a daily brief: active sectors, unmet demand.
+Two-hour segments, reduced to a daily brief.
 
 <img src="static/screenshot_digest.png" alt="Digest" width="460">
 
 **Actor dossiers**  
-Sector history, self-disclosed facts and hearsay for any Telegram id, each claim carrying its message id.
+Sector history, self-disclosed facts and hearsay for any Telegram id.
 
 <img src="static/screenshot_dossier.png" alt="Actor dossier" width="260">
 
 **Dashboard**  
-Message velocity, active senders, deletion rate.
+Velocity, active senders, deletion rate.
 
 <img src="static/screenshot_dash.png" alt="Dashboard" width="100%">
-
----
-
-## Key Capabilities
-- **High-Performance Streaming:** Non-blocking asynchronous message parsing via Telethon.
-- **WebSocket Feeds:** Instantly pushes new logs and deleted message alerts to connected clients.
-- **Data Persistence:** Built on SQLAlchemy async engine, natively supporting PostgreSQL.
-- **Clean Architecture:** Modular routes, robust rate-limiting, secure authentication, and hCaptcha integration.
 
 ---
 
@@ -79,85 +93,63 @@ Then `start.bat`, or manually:
 .venv\Scripts\python.exe bot.py
 ```
 
-Chart.js is vendored in `static/vendor/`, so the panel renders with no internet
-access.
+Chart.js is vendored in `static/vendor/`, so the panel needs no internet access.
 
-**1. Prerequisites**
-- Python 3.10+ (3.14 tested). SQLAlchemy must be >=2.0.36: 2.0.30 crashes on Python 3.13+
-  (`TypeError: Can't replace canonical symbol for '__firstlineno__'`).
-- PostgreSQL Server
-- Telegram API ID and API Hash (Obtain from [my.telegram.org](https://my.telegram.org))
+### Server install
 
-**2. Clone & Install**
-
-*Windows:*
 ```bash
-python -m venv venv
-venv\Scripts\activate
+python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env
 ```
 
-*Linux / macOS:*
-```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
+`API_ID` and `API_HASH` come from [my.telegram.org](https://my.telegram.org).
+Create the database once, then fill `.env`:
 
-**3. Configure Environment**
-Copy `.env.example` to `.env` and configure your deployment credentials:
-```env
-API_ID=your_api_id
-API_HASH=your_api_hash
-DATABASE_URL=postgresql+asyncpg://user:password@localhost/telegramlogs
-PHONE_NUMBER=+1234567890
-DASHBOARD_PASSWORD=your_secure_password
-```
-
-**4. Prepare Database**
 ```sql
-CREATE DATABASE telegramlogs;
+CREATE DATABASE vault;
 ```
 
-**5. Launch System**
+```env
+API_ID=1234567
+API_HASH=your_api_hash
+DATABASE_URL=postgresql+asyncpg://vault:pass@localhost/vault
+DASHBOARD_PASSWORD=pick-something
+SESSION_SECRET=random-32-char-string
+```
 
-*Windows:*
-Use the provided batch script for a streamlined startup:
+Run both processes under a supervisor (`systemd`, `tmux`, `screen`):
+
 ```bash
-start.bat
+uvicorn app:app --host 127.0.0.1 --port 8000
+python3 bot.py
 ```
 
-*Linux / macOS:*
-You can use `tmux`, `screen`, or run them in the background:
-```bash
-source venv/bin/activate
-uvicorn app:app --host 0.0.0.0 --port 8000 &
-python3 bot.py &
-```
+First login is a one-time interactive step (`login_once.py`); after that the
+session file is reused and `ALLOW_NEW_LOGIN=0` keeps it that way.
 
 ---
 
 ## Ban safety
 
 A listener is not banned for reading, it is banned for looking like a fleet. Every
-rule below is enforced in `bot.py`, and breaking one is what actually costs accounts:
+rule below is enforced in `bot.py`:
 
-- **One account, one `api_id`, one egress IP.** Accounts sharing an `api_id` and an
-  IP are clustered by Telegram; when one gets flagged, the cluster goes with it. Set
-  `ACCOUNT=alt1` and `API_ID_ALT1` / `API_HASH_ALT1`, one `SESSION_NAME`, one
-  `PROXY` per account.
+- **One account, one `api_id`, one egress IP.** Accounts sharing both are clustered
+  by Telegram; when one is flagged, the cluster goes with it. Set `ACCOUNT=alt1`
+  with `API_ID_ALT1` / `API_HASH_ALT1`, one `SESSION_NAME` and one `PROXY` per account.
 - **One process per session.** `AuthKeyDuplicatedError` means two processes touched
   the same `.session`. Telegram revokes the key instantly. `bot.py` takes a file lock
   (`*.lock`) and refuses to start a second copy.
-- **No automatic login.** Asking for a code over and over is a number-level ban
-  trigger. `ALLOW_NEW_LOGIN=0` by default: log in once from a normal client, or set
-  it to `1` for one deliberate first run.
+- **No automatic login.** Repeated code requests are a number-level ban trigger.
+  `ALLOW_NEW_LOGIN=0` by default; set it to `1` only for one deliberate first run.
 - **Real client identity.** `DEVICE_MODEL` / `SYSTEM_VERSION` / `APP_VERSION` are
   filled in; the default `Telethon` banner is the easiest unofficial-client
   fingerprint.
 - **No per-message API calls.** Entities come from the update cache. Startup reads
-  at most 100 dialogs and `catch_up` is off, so a restart does not replay a backlog
-  of hundreds of messages at once.
+  at most 100 dialogs and `catch_up` is off, so a restart does not replay a backlog.
+- **Slow polling.** Delivery runs on a 50 to 60 second randomised dialog poll,
+  roughly 1,500 requests a day, with exponential backoff on `FloodWait`.
 - **Warm the number up.** 7-10 days of normal use before attaching a userbot.
 
 Read-only by design: `bot.py` never sends, joins, or invites. Keep it that way.
@@ -167,24 +159,24 @@ Read-only by design: `bot.py` never sends, joins, or invites. Keep it that way.
 ## Project Structure
 
 ```text
-├── app.py              # FastAPI Application (Main Entry)
-├── bot.py              # Telethon Userbot Listener
-├── config.py           # Environment Variables loader
-├── database.py         # SQLAlchemy ORM Models
-├── start.bat           # Multi-process Launcher
-├── routes/             # Core Backend Logic
-│   ├── auth.py         # Authentication & Rate Limiting
-│   ├── dashboard.py    # Analytics Engine
-│   ├── messages.py     # Log Search & API
-│   └── websocket.py    # Real-Time WebSocket Broadcaster
-├── middleware/         # Custom Middlewares (e.g. Security Headers)
-├── templates/          # Jinja2 HTML Views
-└── static/             # Assets (CSS, JS, Logo, Screenshots)
+├── app.py              # FastAPI app and routers
+├── bot.py              # Telethon userbot listener
+├── digest.py           # segment extraction and daily reduce
+├── profiles.py         # actor dossiers
+├── llm.py              # provider switch, JSON calls, retries
+├── daily_digest.py     # cron entry point, 00:00 TRT
+├── config.py           # environment variables loader
+├── database.py         # SQLAlchemy ORM models
+├── start.bat           # multi-process launcher
+├── routes/             # auth, messages, dashboard, websocket, digest, profiles
+├── middleware/         # custom middlewares (security headers)
+├── templates/          # Jinja2 HTML views
+└── static/             # assets (CSS, JS, logo, screenshots)
 ```
 
 ---
 
 <div align="center">
   <br>
-   <a href="https://github.com/diceandink">github.com/diceandink</a>
+   <a href="https://github.com/c1tymorgu3">github.com/c1tymorgu3</a>
 </div>
