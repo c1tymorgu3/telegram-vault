@@ -1,7 +1,9 @@
 <div align="center">
-  <img src="static/logo.svg" alt="Telegram Vault Logo" width="150">
+  <img src="static/logo-mark.png" alt="Telegram Vault" width="300">
 
-  # Telegram Vault — Intelligence Hub
+  # Telegram Vault
+
+  **LLM-assisted Telegram OSINT tool · by c1tymorgu3**
 
   ![Python](https://img.shields.io/badge/Python-3.12-blue?style=flat-square&logo=python)
   ![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688?style=flat-square&logo=fastapi)
@@ -9,21 +11,31 @@
   ![Telethon](https://img.shields.io/badge/Telethon-1.36.0-2CA5E0?style=flat-square&logo=telegram)
   ![Status](https://img.shields.io/badge/Status-Active-success?style=flat-square)
 
-  *An advanced OSINT & Logging system that listens to Telegram messages in real-time, saves them to a database, and provides live streaming analysis through a web dashboard.*
+  *Reads every message in your chats, keeps it in a searchable archive, and turns it into evidence-backed briefs — sector by sector, actor by actor.*
 </div>
 
 ---
 
 
-**Live Intelligence Logging**  
-Real-time message streaming via WebSockets with dynamic search, context extraction, and high-performance filtering.
+**Live archive**  
+Searchable log of every message, deleted ones included.
 
-<img src="static/screenshot_log.png" alt="Live Intelligence Log Viewer" width="100%">
+<img src="static/screenshot_log.png" alt="Live archive" width="100%">
 
-**Analytics Dashboard**  
-Actionable intelligence with KPIs, message velocity charts, active users, and target analysis using interactive visualizations.
+**Digests**  
+Two-hour segments rolled into a daily brief: active sectors, unmet demand.
 
-<img src="static/screenshot_dash.png" alt="Intelligence Analytics Dashboard" width="100%">
+<img src="static/screenshot_digest.png" alt="Digest" width="100%">
+
+**Actor dossiers**  
+Sector history, self-disclosed facts and hearsay for any Telegram id, each claim carrying its message id.
+
+<img src="static/screenshot_dossier.png" alt="Actor dossier" width="260">
+
+**Dashboard**  
+Message velocity, active senders, deletion rate.
+
+<img src="static/screenshot_dash.png" alt="Dashboard" width="100%">
 
 ---
 

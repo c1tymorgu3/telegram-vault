@@ -337,7 +337,7 @@ label {
 /* Mark: the glyph itself, no tile. Height is fixed so the wordmark next to it
    keeps one baseline; width follows the artwork's aspect ratio. */
 .brand-mark {
-    height: 42px;
+    height: 58px;
     width: auto;
     display: block;
     flex: 0 0 auto;
@@ -345,7 +345,7 @@ label {
 
 .brand-name {
     font-family: var(--font-ui);
-    font-size: 26px;
+    font-size: 28px;
     font-weight: 600;
     letter-spacing: -0.025em;
     color: var(--text);
