@@ -19,53 +19,48 @@
 ## What it does
 
 A userbot sits on one Telegram account and writes every message it sees into a
-database. A web panel reads it: search, per-sender profiles, charts, CSV export.
-The account never sends anything.
+database. A web panel reads that database: search, per-sender profiles, charts,
+CSV export. The account never sends anything.
 
-**Digests.** Every two hours new messages are grouped per chat and extracted into
-a JSON record: sectors in play, what people asked for, who was active. At midnight
-those records become one daily brief. Every claim carries the message ids it came
-from, and those ids are checked against the archive before saving, so a citation
-the model invented shows up as a shortfall in the count.
+Every two hours the new messages are grouped per chat and pulled into a JSON
+record: sectors in play, what people asked for, who was active. At midnight those
+records become one daily brief. Each claim carries the message ids it came from,
+and those ids are checked against the archive before the brief is saved. If the
+model invents a citation, the count on the card shows the shortfall.
 
-**Actor dossiers.** Ask for a profile of a Telegram id and the model reads only
-that account's messages: sectors it worked in and when, what it said about itself,
-what it repeated from others. Nothing is generated until you press the button.
+Ask for a profile of a Telegram id and the model reads that account's own
+messages: sectors it worked in and when, what it said about itself, what it only
+repeated from others. Nothing is generated until you press the button, and the
+result is cached for a day.
 
-`LLM_PROVIDER` in `.env` switches between opencode, OpenRouter, OpenAI, DeepSeek,
+`LLM_PROVIDER` in `.env` picks between opencode, OpenRouter, OpenAI, DeepSeek,
 Groq or any OpenAI-compatible endpoint.
 
 ---
 
 ## Screenshots
 
-**Live archive**  
 Every message, deleted ones included.
 
 <img src="static/screenshot_log.png" alt="Live archive" width="100%">
 
-**Digests**  
 Two-hour segments, reduced to a daily brief.
 
 <img src="static/screenshot_digest.png" alt="Digest" width="460">
 
-**Actor dossiers**  
 Sector history, self-disclosed facts and hearsay for any Telegram id.
 
 <img src="static/screenshot_dossier.png" alt="Actor dossier" width="260">
 
-**Dashboard**  
 Velocity, active senders, deletion rate.
 
 <img src="static/screenshot_dash.png" alt="Dashboard" width="100%">
 
 ---
 
-## Installation & Setup
+## Installation
 
-### Local install (Windows)
-
-Use **Python 3.12**, not 3.13/3.14: the pinned stack (`pydantic-core`, `asyncpg`)
+Use Python 3.12, not 3.13 or 3.14. The pinned stack (`pydantic-core`, `asyncpg`)
 has no wheels there and the build fails without a C toolchain.
 
 ```bat
@@ -74,7 +69,7 @@ py -3.12 -m venv .venv
 copy .env.example .env
 ```
 
-`.env` for a local run (SQLite, plain HTTP on loopback):
+For a local run, point the database at SQLite and turn off HTTPS-only cookies:
 
 ```env
 DATABASE_URL=sqlite+aiosqlite:///./telegramlogs.db
@@ -83,28 +78,19 @@ SESSION_SECRET=paste-a-random-32-char-string
 SESSION_HTTPS_ONLY=0
 ```
 
-`SESSION_HTTPS_ONLY=0` matters on `http://127.0.0.1`: with the default `1` the
-browser never sends the session cookie back and every page bounces to `/login`.
+That last line matters on `http://127.0.0.1`. With the default `1` the browser
+never sends the session cookie back, and every page bounces to `/login`.
 
-Then `start.bat`, or manually:
+Then `start.bat`, or both processes by hand:
 
 ```bat
 .venv\Scripts\python.exe -m uvicorn app:app --host 127.0.0.1 --port 8000
 .venv\Scripts\python.exe bot.py
 ```
 
-Chart.js is vendored in `static/vendor/`, so the panel needs no internet access.
-
-### Server install
-
-```bash
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-```
-
-`API_ID` and `API_HASH` come from [my.telegram.org](https://my.telegram.org).
-Create the database once, then fill `.env`:
+On a server the steps are the same with `python3 -m venv venv`. `API_ID` and
+`API_HASH` come from [my.telegram.org](https://my.telegram.org). Create the
+database once, then fill `.env`:
 
 ```sql
 CREATE DATABASE vault;
@@ -118,45 +104,48 @@ DASHBOARD_PASSWORD=pick-something
 SESSION_SECRET=random-32-char-string
 ```
 
-Run both processes under a supervisor (`systemd`, `tmux`, `screen`):
-
-```bash
-uvicorn app:app --host 127.0.0.1 --port 8000
-python3 bot.py
-```
-
-First login is a one-time interactive step (`login_once.py`); after that the
+Run both processes under a supervisor (`systemd`, `tmux`, `screen`). The first
+login is a one-time interactive step through `login_once.py`; after that the
 session file is reused and `ALLOW_NEW_LOGIN=0` keeps it that way.
+
+Chart.js is vendored in `static/vendor/`, so the panel needs no internet access.
 
 ---
 
 ## Ban safety
 
-A listener is not banned for reading, it is banned for looking like a fleet. Every
-rule below is enforced in `bot.py`:
+A listener is not banned for reading. It is banned for looking like a fleet, and
+every rule below is enforced in `bot.py`.
 
-- **One account, one `api_id`, one egress IP.** Accounts sharing both are clustered
-  by Telegram; when one is flagged, the cluster goes with it. Set `ACCOUNT=alt1`
-  with `API_ID_ALT1` / `API_HASH_ALT1`, one `SESSION_NAME` and one `PROXY` per account.
-- **One process per session.** `AuthKeyDuplicatedError` means two processes touched
-  the same `.session`. Telegram revokes the key instantly. `bot.py` takes a file lock
-  (`*.lock`) and refuses to start a second copy.
-- **No automatic login.** Repeated code requests are a number-level ban trigger.
-  `ALLOW_NEW_LOGIN=0` by default; set it to `1` only for one deliberate first run.
-- **Real client identity.** `DEVICE_MODEL` / `SYSTEM_VERSION` / `APP_VERSION` are
-  filled in; the default `Telethon` banner is the easiest unofficial-client
-  fingerprint.
-- **No per-message API calls.** Entities come from the update cache. Startup reads
-  at most 100 dialogs and `catch_up` is off, so a restart does not replay a backlog.
-- **Slow polling.** Delivery runs on a 50 to 60 second randomised dialog poll,
-  roughly 1,500 requests a day, with exponential backoff on `FloodWait`.
-- **Warm the number up.** 7-10 days of normal use before attaching a userbot.
+One account, one `api_id`, one egress IP. Telegram clusters accounts that share
+an `api_id` and an IP address, so when one gets flagged the rest go with it. Use
+`ACCOUNT=alt1` with `API_ID_ALT1` / `API_HASH_ALT1`, one `SESSION_NAME` and one
+`PROXY` per account.
 
-Read-only by design: `bot.py` never sends, joins, or invites. Keep it that way.
+One process per session. `AuthKeyDuplicatedError` means two processes touched the
+same `.session`, and Telegram revokes the key on the spot. `bot.py` takes a file
+lock and refuses to start a second copy.
+
+No automatic login. Repeated code requests sit on the list of number-level ban
+triggers. `ALLOW_NEW_LOGIN=0` is the default; set it to `1` only for one
+deliberate first run.
+
+Real client identity. `DEVICE_MODEL`, `SYSTEM_VERSION` and `APP_VERSION` are
+filled in; the stock `Telethon` banner is an easy fingerprint.
+
+No per-message API calls. Entities come from the update cache, startup reads at
+most 100 dialogs, and `catch_up` is off, so a restart does not replay a backlog.
+
+Slow polling. Delivery runs on a 50 to 60 second randomised dialog poll, about
+1,500 requests a day, with exponential backoff on `FloodWait`.
+
+Let a cold number live normally for a week or two before attaching a userbot.
+
+`bot.py` never sends, joins or invites. Read-only is the whole point.
 
 ---
 
-## Project Structure
+## Project structure
 
 ```text
 ├── app.py              # FastAPI app and routers
@@ -169,7 +158,7 @@ Read-only by design: `bot.py` never sends, joins, or invites. Keep it that way.
 ├── database.py         # SQLAlchemy ORM models
 ├── start.bat           # multi-process launcher
 ├── routes/             # auth, messages, dashboard, websocket, digest, profiles
-├── middleware/         # custom middlewares (security headers)
+├── middleware/         # security headers
 ├── templates/          # Jinja2 HTML views
 └── static/             # assets (CSS, JS, logo, screenshots)
 ```
