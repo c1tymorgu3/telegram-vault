@@ -32,3 +32,21 @@ Thumbs.db
 *.db
 *.db-journal
 AUTH_ERROR.flag
+
+## Sirlar: asla commit edilmez
+api.txt
+code.txt
+login.json
+*.session*
+*.db
+*.db-wal
+*.db-shm
+*.bak
+*.bak-*
+logs/
+*.key
+*.pem
+
+## Model ciktilari (yeniden uretilebilir)
+digests.json
+backups/

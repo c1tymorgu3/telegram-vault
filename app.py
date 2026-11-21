@@ -3,7 +3,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from database import init_db
 from middleware.security import security_headers
-from routes import auth, messages, dashboard, websocket
+from routes import auth, messages, dashboard, websocket, digest, profiles
 import os
 import config
 import logging
@@ -35,6 +35,8 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 app.include_router(auth.router)
 app.include_router(messages.router)
 app.include_router(dashboard.router)
+app.include_router(digest.router)
+app.include_router(profiles.router)
 app.include_router(websocket.router)
 
 

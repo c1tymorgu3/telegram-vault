@@ -2,7 +2,7 @@ from fastapi import APIRouter, Request, Query, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc
-from datetime import timedelta
+from datetime import timedelta, timezone
 from typing import Optional
 import io
 import csv
@@ -18,6 +18,7 @@ async def search_messages(
     query: Optional[str] = None,
     username: Optional[str] = None,
     chat_title: Optional[str] = None,
+    user_id: Optional[int] = None,
     is_deleted: Optional[bool] = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=50),
@@ -34,6 +35,9 @@ async def search_messages(
         stmt = stmt.where(Message.username.ilike(f"%{username}%"))
     if chat_title:
         stmt = stmt.where(Message.chat_title.ilike(f"%{chat_title}%"))
+    if user_id is not None:
+        # Tam eslesme: kismi arama 648997000 -> 6489970001 de dondurur.
+        stmt = stmt.where(Message.user_id == user_id)
     if is_deleted is not None:
         stmt = stmt.where(Message.is_deleted == is_deleted)
 
@@ -58,7 +62,9 @@ async def search_messages(
                 "username": m.username,
                 "sender_name": m.sender_name,
                 "content": m.content,
-                "timestamp": (m.timestamp + timedelta(hours=3)).isoformat(),
+                # UTC + offset: tarayici kendi saat dilimine cevirir, saat
+                # kaymasi ve AM/PM karisikligi kalkar.
+                "timestamp": m.timestamp.replace(tzinfo=timezone.utc).isoformat(),
                 "is_deleted": getattr(m, 'is_deleted', False)
             }
             for m in messages
@@ -72,6 +78,7 @@ async def export_messages(
     query: Optional[str] = None,
     username: Optional[str] = None,
     chat_title: Optional[str] = None,
+    user_id: Optional[int] = None,
     is_deleted: Optional[bool] = None,
     db: AsyncSession = Depends(get_db)
 ):
@@ -86,6 +93,11 @@ async def export_messages(
         stmt = stmt.where(Message.username.ilike(f"%{username}%"))
     if chat_title:
         stmt = stmt.where(Message.chat_title.ilike(f"%{chat_title}%"))
+    if user_id is not None:
+        # Tam eslesme: kismi arama 648997000 -> 6489970001 de dondurur.
+        stmt = stmt.where(Message.user_id == user_id)
+    if user_id is not None:
+        stmt = stmt.where(Message.user_id == user_id)
     if is_deleted is not None:
         stmt = stmt.where(Message.is_deleted == is_deleted)
 
@@ -97,7 +109,7 @@ async def export_messages(
     writer.writerow(["Mesaj_ID", "Tarih_Saat", "Grup_Kanal", "Gonderen_Ad", "Kullanici_Adi", "User_ID", "Icerik", "Silinmis_Mi"])
 
     for m in messages:
-        tr_time = (m.timestamp + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S")
+        tr_time = (m.timestamp + timedelta(hours=3)).strftime("%d.%m.%Y %H:%M")
         writer.writerow([
             m.message_id,
             tr_time,
@@ -207,8 +219,8 @@ async def get_target_profile(
         "username": latest_msg.username or "Yok",
         "sender_name": latest_msg.sender_name or "Bilinmiyor",
         "total": total_count,
-        "first_seen": (first_msg.timestamp + timedelta(hours=3)).isoformat(),
-        "last_seen": (latest_msg.timestamp + timedelta(hours=3)).isoformat(),
+        "first_seen": first_msg.timestamp.replace(tzinfo=timezone.utc).isoformat(),
+        "last_seen": latest_msg.timestamp.replace(tzinfo=timezone.utc).isoformat(),
         "groups": [{"name": g[0] or "Private", "count": g[1]} for g in groups],
         "hours": hours,
         "clones": clones

@@ -4,7 +4,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc, text
 from datetime import datetime, timedelta
-from database import Message
+from database import Message, Chat
 from routes.auth import is_authenticated, get_db
 
 router = APIRouter()
@@ -30,6 +30,45 @@ async def dashboard_page(request: Request):
     if not is_authenticated(request):
         return RedirectResponse(url="/login", status_code=302)
     return templates.TemplateResponse(request=request, name="dashboard.html", context={})
+
+
+@router.get("/api/chats")
+async def list_chats(request: Request, db: AsyncSession = Depends(get_db)):
+    """Every chat the listener knows about, not just the ones that spoke."""
+    if not is_authenticated(request):
+        return JSONResponse(status_code=401, content={"detail": "Yetkisiz"})
+
+    stmt = (
+        select(
+            Chat.chat_id,
+            Chat.title,
+            Chat.username,
+            Chat.chat_type,
+            Chat.member_count,
+            Chat.last_message_at,
+            func.count(Message.id).label("messages"),
+        )
+        .outerjoin(Message, Message.chat_id == Chat.chat_id)
+        .group_by(Chat.chat_id)
+        .order_by(desc(func.coalesce(Chat.last_message_at, datetime(1970, 1, 1))))
+        .limit(500)
+    )
+    rows = (await db.execute(stmt)).all()
+    return {
+        "total": len(rows),
+        "chats": [
+            {
+                "chat_id": r.chat_id,
+                "title": r.title,
+                "username": r.username,
+                "chat_type": r.chat_type,
+                "member_count": r.member_count,
+                "last_message_at": r.last_message_at.isoformat() if r.last_message_at else None,
+                "messages": r.messages,
+            }
+            for r in rows
+        ],
+    }
 
 
 @router.get("/api/dashboard")
@@ -127,6 +166,15 @@ async def get_dashboard_stats(request: Request, db: AsyncSession = Depends(get_d
     top_users_rows = (await db.execute(top_users_stmt)).all()
     top_users = [{"username": r[0] or "?", "name": r[1] or "?", "user_id": r[2], "count": r[3]} for r in top_users_rows]
 
+    del_groups_stmt = (
+        select(Message.chat_title, func.count(Message.id).label("cnt"))
+        .where(Message.timestamp >= one_day_ago, Message.is_deleted == True)
+        .group_by(Message.chat_title)
+        .order_by(desc("cnt"))
+        .limit(5)
+    )
+    del_groups = [{"name": r[0] or "Private", "count": r[1]} for r in (await db.execute(del_groups_stmt)).all()]
+
     storage = {"sqlite": "SQLite", "postgresql": "PostgreSQL"}.get(dialect, dialect)
 
     return {
@@ -138,7 +186,119 @@ async def get_dashboard_stats(request: Request, db: AsyncSession = Depends(get_d
         "top_group": top_group,
         "top_deleted_group": top_deleted_group,
         "velocity": velocity,
+        "deleted_groups": del_groups,
         "top_groups": top_groups,
         "top_users": top_users,
         "generated_at": (now + timedelta(hours=3)).strftime("%H:%M:%S")
+    }
+
+
+@router.get("/api/stream-stats")
+async def stream_stats(request: Request, db: AsyncSession = Depends(get_db)):
+    """Everything the live view needs, in one call.
+
+    Per-minute resolution for the last hour, the counters that sit beside it,
+    and the groups currently producing traffic. The dashboard keeps the slow
+    daily view; this one is tuned for someone watching the feed.
+    """
+    if not is_authenticated(request):
+        return JSONResponse(status_code=401, content={"detail": "Yetkisiz"})
+
+    now = datetime.utcnow()
+    hour_ago = now - timedelta(hours=1)
+    day_ago = now - timedelta(hours=24)
+    dialect = db.bind.dialect.name
+
+    if dialect == "sqlite":
+        bucket = "strftime('%Y-%m-%d %H:%M', timestamp)"
+    else:
+        bucket = "to_char(date_trunc('minute', timestamp), 'YYYY-MM-DD HH24:MI')"
+
+    rows = (await db.execute(
+        text(f"""
+            SELECT {bucket} AS m, COUNT(*) AS cnt
+            FROM messages
+            WHERE timestamp >= :since
+            GROUP BY m ORDER BY m ASC
+        """), {"since": hour_ago}
+    )).all()
+
+    del_rows = (await db.execute(
+        text(f"""
+            SELECT {bucket} AS m, COUNT(*) AS cnt
+            FROM messages
+            WHERE timestamp >= :since AND is_deleted = :yes
+            GROUP BY m ORDER BY m ASC
+        """), {"since": hour_ago, "yes": True}
+    )).all()
+
+    minute_map, del_map = {}, {}
+    for raw, cnt in rows:
+        key = raw if isinstance(raw, str) else raw.strftime("%Y-%m-%d %H:%M")
+        minute_map[key] = cnt
+    for raw, cnt in del_rows:
+        key = raw if isinstance(raw, str) else raw.strftime("%Y-%m-%d %H:%M")
+        del_map[key] = cnt
+
+    per_minute, deleted_per_minute = [], []
+    for i in range(60, 0, -1):
+        slot = (now - timedelta(minutes=i)).replace(second=0, microsecond=0)
+        key = slot.strftime("%Y-%m-%d %H:%M")
+        tr = slot + timedelta(hours=3)
+        label = tr.strftime("%H:%M")
+        per_minute.append({"minute": label, "count": minute_map.get(key, 0)})
+        deleted_per_minute.append({"minute": label, "count": del_map.get(key, 0)})
+
+    total = (await db.execute(select(func.count(Message.id)))).scalar()
+    last_hour = (await db.execute(
+        select(func.count(Message.id)).where(Message.timestamp >= hour_ago)
+    )).scalar()
+    deleted_hour = (await db.execute(
+        select(func.count(Message.id)).where(Message.timestamp >= hour_ago, Message.is_deleted == True)
+    )).scalar()
+    deleted_day = (await db.execute(
+        select(func.count(Message.id)).where(Message.timestamp >= day_ago, Message.is_deleted == True)
+    )).scalar()
+    groups_hour = (await db.execute(
+        select(func.count(func.distinct(Message.chat_title))).where(Message.timestamp >= hour_ago)
+    )).scalar()
+
+    group_rows = (await db.execute(
+        select(Message.chat_title, func.count(Message.id).label("cnt"))
+        .where(Message.timestamp >= hour_ago)
+        .group_by(Message.chat_title)
+        .order_by(desc("cnt"))
+        .limit(4)
+    )).all()
+
+    del_group_rows = (await db.execute(
+        select(Message.chat_title, func.count(Message.id).label("cnt"))
+        .where(Message.timestamp >= hour_ago, Message.is_deleted == True)
+        .group_by(Message.chat_title)
+        .order_by(desc("cnt"))
+        .limit(3)
+    )).all()
+
+    last_row = (await db.execute(
+        select(Message.timestamp).order_by(desc(Message.timestamp)).limit(1)
+    )).first()
+    last_seen = None
+    if last_row and last_row[0]:
+        last_seen = (last_row[0] + timedelta(hours=3)).strftime("%H:%M:%S")
+
+    peak = max(per_minute, key=lambda p: p["count"]) if per_minute else {"minute": "-", "count": 0}
+
+    return {
+        "per_minute": per_minute,
+        "deleted_per_minute": deleted_per_minute,
+        "deleted_groups_hour": [{"name": r[0] or "Private", "count": r[1]} for r in del_group_rows],
+        "peak": peak,
+        "last_seen": last_seen,
+        "total": total or 0,
+        "last_hour": last_hour or 0,
+        "deleted_hour": deleted_hour or 0,
+        "deleted_day": deleted_day or 0,
+        "groups_hour": groups_hour or 0,
+        "groups": [{"name": r[0] or "Private", "count": r[1]} for r in group_rows],
+        "generated_at": (now + timedelta(hours=3)).strftime("%H:%M:%S"),
     }

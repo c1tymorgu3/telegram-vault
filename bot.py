@@ -21,14 +21,16 @@ breaking it costs accounts, not just uptime:
 import asyncio
 import logging
 import os
+import random
 import sys
+import time
 from collections import deque
 from datetime import datetime, timezone
 from urllib.parse import urlparse, unquote
 
 import httpx
-from sqlalchemy import select
-from telethon import TelegramClient, events
+from sqlalchemy import select, update, func
+from telethon import TelegramClient, events, utils
 from telethon.errors import (
     AuthKeyError,
     AuthKeyDuplicatedError,
@@ -43,7 +45,7 @@ from telethon.errors import (
 
 import config
 from config import API_ID, API_HASH, PHONE_NUMBER
-from database import SessionLocal, Message, init_db
+from database import SessionLocal, Message, Chat, init_db
 
 # Auth errors that mean "this session will never work again". Fatal, but the
 # answer is never "delete the session and log in again" — see handle_fatal().
@@ -69,6 +71,7 @@ logger = logging.getLogger(__name__)
 # Dialogs are only read for the local dashboard, so a capped cache is enough
 # and one request instead of a full pagination.
 CHAT_TITLE_CACHE = {}
+CHAT_SYNC_LIMIT = 200
 RECENT_KEYS = deque(maxlen=5000)
 RECENT_SET = set()
 
@@ -204,6 +207,127 @@ def display_name(entity):
     return name or getattr(entity, "username", None) or "Unknown"
 
 
+# user_id -> (username, display name). Filled lazily by resolve_senders() so a
+# message never waits on a network round trip before it is stored.
+SENDER_CACHE = {}
+PENDING_SENDERS = set()
+
+
+def _chat_title_hint(msg, chat_id):
+    """Title without touching the network: cache, author, or a readable stub."""
+    author = getattr(msg, "post_author", None)
+    if author:
+        return str(author)[:255]
+    return f"Chat {chat_id}"
+
+
+def sender_identity(msg, user_id):
+    """Name for a sender, from cache when possible; queue it when not."""
+    cached = SENDER_CACHE.get(user_id)
+    if cached:
+        return cached
+    author = getattr(msg, "post_author", None)
+    name = str(author)[:255] if author else (f"User {user_id}" if user_id else "Unknown")
+    if user_id:
+        PENDING_SENDERS.add(user_id)
+    return None, name
+
+
+async def resolve_senders(client):
+    """Resolve queued sender ids a few at a time, then rewrite stored rows."""
+    if not PENDING_SENDERS:
+        return
+    batch = [uid for uid in list(PENDING_SENDERS)[:2]]
+    for user_id in batch:
+        PENDING_SENDERS.discard(user_id)
+        try:
+            entity = await client.get_entity(user_id)
+        except FloodWaitError as exc:
+            logger.warning("FloodWait while resolving senders: %ss", exc.seconds)
+            return
+        except Exception:
+            continue
+        username = getattr(entity, "username", None)
+        name = display_name(entity)
+        SENDER_CACHE[user_id] = (username, name)
+        try:
+            async with SessionLocal() as session:
+                await session.execute(
+                    update(Message)
+                    .where(Message.user_id == user_id)
+                    .values(username=username, sender_name=name[:255])
+                )
+                await session.commit()
+        except Exception as exc:
+            logger.warning("Sender rename failed: %s", exc)
+
+
+async def resolve_loop(client):
+    while True:
+        await asyncio.sleep(15)
+        try:
+            await resolve_senders(client)
+        except Exception as exc:
+            logger.warning("Sender resolve pass failed: %s", exc)
+
+
+async def gap_watchdog(client):
+    """One cheap request per interval: which chats have something new?
+
+    Symptom being fixed: updates only appeared after the same account opened
+    the chat in another client. The session is simply not being pushed to, so
+    waiting for events is not enough.
+
+    `client.catch_up()` is NOT the answer here — it walks every dialog and
+    issues one channel-difference request each, which at ~200 dialogs is a
+    flood per pass. `get_dialogs(limit=...)` is a single request that returns
+    the newest message id per chat; only the chats that moved are backfilled.
+    """
+    backoff = 1.0
+    while True:
+        # Her turda yeni aralik: 50-60 sn. Flood gelirse backoff carpani.
+        await asyncio.sleep(min(random.uniform(DIALOG_POLL_MIN, DIALOG_POLL_MAX) * backoff,
+                                DIALOG_POLL_BACKOFF_MAX))
+        try:
+            dialogs = await client.get_dialogs(limit=DIALOG_POLL_LIMIT)
+        except FloodWaitError as exc:
+            # Telegram bu hizi sevmedi: araligi iki katina cikar, 5 dk'da dur.
+            backoff = min(backoff * 2, 5)
+            logger.warning("FloodWait on dialog poll: %ss — backoff x%.0f",
+                           exc.seconds, backoff)
+            await asyncio.sleep(exc.seconds + 5)
+            continue
+        except Exception as exc:
+            logger.warning("Dialog poll failed: %s", exc)
+            continue
+
+        latest = {}
+        for dialog in dialogs:
+            if dialog.is_user or dialog.message is None:
+                continue
+            latest[utils.get_peer_id(dialog.entity)] = dialog.message.id
+        if not latest:
+            continue
+
+        try:
+            async with SessionLocal() as session:
+                rows = (await session.execute(
+                    select(Message.chat_id, func.max(Message.message_id))
+                    .where(Message.chat_id.in_(list(latest)))
+                    .group_by(Message.chat_id)
+                )).all()
+        except Exception as exc:
+            logger.warning("Dialog poll compare failed: %s", exc)
+            continue
+
+        stored = {chat_id: last_id for chat_id, last_id in rows}
+        behind = [cid for cid, last_id in latest.items()
+                  if last_id and last_id > stored.get(cid, 0)]
+        if behind:
+            logger.info("Dialog poll: %s chat(s) behind, fetching.", len(behind))
+            await backfill_gap(client, only=set(behind))
+
+
 _STATE = {"lock": None}
 
 
@@ -247,20 +371,25 @@ def register(client, http):
             return
 
         try:
-            # Cached entities: no API call, no flood risk.
-            chat = msg.chat
-            sender = msg.sender
-
+            # No entity resolution here on purpose: msg.chat / msg.sender fall
+            # back to a network get_entity() whenever the entity is not cached,
+            # and that measured 5-9s per message. Slow handlers are also why the
+            # server stopped pushing to this session. Titles come from the
+            # get_dialogs cache, names from SENDER_CACHE, filled lazily.
+            _t0 = _t1 = _t2 = time.perf_counter()
             chat_id = event.chat_id
-            if chat is not None and getattr(chat, "title", None):
-                CHAT_TITLE_CACHE[chat_id] = chat.title
-            chat_title = CHAT_TITLE_CACHE.get(chat_id, f"Chat {chat_id}")
+            chat_title = CHAT_TITLE_CACHE.get(chat_id) or _chat_title_hint(msg, chat_id)
 
             content = msg.message
             timestamp = msg.date.astimezone(timezone.utc).replace(tzinfo=None)
+            # Pipeline latency: Telegram's own send time vs the moment this
+            # process handles it. Anything above ~2s means the update stream is
+            # being drained late, not that the panel is slow.
+            _lag = (datetime.now(timezone.utc).replace(tzinfo=None) - timestamp).total_seconds()
+            if _lag > 2:
+                logger.warning("Update lag %.1fs (%s)", _lag, chat_title[:32])
             user_id = event.sender_id
-            username = getattr(sender, "username", None) if sender else None
-            sender_name = display_name(sender)
+            username, sender_name = sender_identity(msg, user_id)
 
             async with SessionLocal() as session:
                 session.add(Message(
@@ -273,7 +402,18 @@ def register(client, http):
                     content=content,
                     timestamp=timestamp,
                 ))
+                # The chat row may exist from the startup sync; if it does not,
+                # this update is a no-op and the next sync creates it.
+                await session.execute(
+                    update(Chat)
+                    .where(Chat.chat_id == chat_id)
+                    .values(
+                        last_message_at=timestamp,
+                        title=chat_title[:255] if chat_title else None,
+                    )
+                )
                 await session.commit()
+            _t3 = time.perf_counter()
 
             try:
                 await http.post(config.BROADCAST_URL, json={
@@ -287,6 +427,20 @@ def register(client, http):
                 }, timeout=2.0)
             except Exception:
                 pass
+            _t4 = time.perf_counter()
+
+            _parts = {
+                "chat": _t1 - _t0,
+                "sender": _t2 - _t1,
+                "db": _t3 - _t2,
+                "broadcast": _t4 - _t3,
+            }
+            if sum(_parts.values()) > 0.8:
+                logger.warning(
+                    "Slow path %.1fs (chat %.2f, sender %.2f, db %.2f, post %.2f)",
+                    sum(_parts.values()), _parts["chat"], _parts["sender"],
+                    _parts["db"], _parts["broadcast"],
+                )
 
         except Exception as exc:
             logger.error("Error: %s", exc)
@@ -341,18 +495,163 @@ def register(client, http):
 # Startup
 # --------------------------------------------------------------------------
 async def warm_entity_cache(client):
-    """Small, bounded dialog read so titles are known without paging everything.
+    """One bounded dialog read that warms titles AND records the chat list.
 
     A full get_dialogs() on a large account is a burst of API traffic right
-    after login — exactly the pattern that produces FloodStrike.
+    after login — exactly the pattern that produces FloodStrike — so the read
+    stays capped. The rows it returns are persisted to `chats`, which is the
+    only way the panel can list a group that has not spoken yet.
     """
     try:
-        await client.get_dialogs(limit=100)
+        dialogs = await client.get_dialogs(limit=CHAT_SYNC_LIMIT)
     except FloodWaitError as exc:
         logger.warning("FloodWait while warming dialogs: sleeping %ss", exc.seconds + 10)
         await asyncio.sleep(exc.seconds + 10)
+        return
     except Exception as exc:
         logger.warning("Dialog warm-up skipped: %s", exc)
+        return
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    saved = 0
+    try:
+        async with SessionLocal() as session:
+            existing = {
+                row.chat_id: row
+                for row in (await session.execute(select(Chat))).scalars()
+            }
+            for dialog in dialogs:
+                entity = dialog.entity
+                if dialog.is_user:
+                    # Private chats stay out of the archive, same rule as the
+                    # message handler.
+                    continue
+                # Marked id (-100… for channels/megagroups) so it matches
+                # event.chat_id from the message handler exactly.
+                chat_id = utils.get_peer_id(entity) if entity else dialog.id
+                title = dialog.title or dialog.name or f"Chat {chat_id}"
+                if dialog.is_channel and not dialog.is_group:
+                    chat_type = "channel"
+                elif dialog.is_group:
+                    chat_type = "group"
+                else:
+                    chat_type = "chat"
+
+                row = existing.get(chat_id)
+                if row is None:
+                    row = Chat(chat_id=chat_id)
+                    session.add(row)
+                    existing[chat_id] = row
+                row.title = title[:255]
+                row.username = getattr(entity, "username", None)
+                row.chat_type = chat_type
+                row.member_count = getattr(entity, "participants_count", None)
+                last = getattr(dialog, "date", None)
+                row.last_message_at = (
+                    last.astimezone(timezone.utc).replace(tzinfo=None) if last else None
+                )
+                row.synced_at = now
+                CHAT_TITLE_CACHE[chat_id] = title
+                saved += 1
+            await session.commit()
+    except Exception as exc:
+        logger.warning("Chat sync failed: %s", exc)
+        return
+    logger.info("Chat list synced: %s dialogs recorded.", saved)
+
+
+BACKFILL_LIMIT = 200
+DIALOG_POLL_MIN = int(os.getenv("DIALOG_POLL_MIN", "50"))  # saniye; rastgele
+DIALOG_POLL_MAX = int(os.getenv("DIALOG_POLL_MAX", "60"))  # 9999 = poll kapali
+DIALOG_POLL_BACKOFF_MAX = 300
+DIALOG_POLL_LIMIT = 60   # en yeni 60 sohbet; arsivdeki 7 sohbetin hepsi burada
+
+
+async def backfill_gap(client, only=None):
+    """Fetch what arrived while the process was down.
+
+    `catch_up=False` means Telegram will not replay a backlog into the event
+    loop, and replaying one in parallel is exactly what looks like scraping.
+    Instead each known chat is asked, in bounded batches, for messages newer
+    than the last id already stored. The batch cap keeps a restart from turning
+    into a scraping burst while still closing a long outage.
+    """
+    filled = 0
+    try:
+        async with SessionLocal() as session:
+            chats = [
+                (row.chat_id, row.title)
+                for row in (await session.execute(select(Chat))).scalars()
+            ]
+    except Exception as exc:
+        logger.warning("Backfill skipped (chat list unavailable): %s", exc)
+        return
+
+    for chat_id, title in chats:
+        if only is not None and chat_id not in only:
+            continue
+        async with SessionLocal() as session:
+            last = (await session.execute(
+                select(func.max(Message.message_id)).where(Message.chat_id == chat_id)
+            )).scalar()
+        # Only chats we already archive: a chat with no history would otherwise
+        # get a free 50-message pull on every restart.
+        if not last:
+            continue
+        try:
+            entity = await client.get_entity(chat_id)
+        except FloodWaitError as exc:
+            logger.warning("FloodWait before backfill: %ss", exc.seconds)
+            break
+        except Exception:
+            continue
+
+        chunk = []
+        cursor = last
+        try:
+            while True:
+                batch = []
+                async for msg in client.iter_messages(
+                    entity, min_id=cursor, limit=BACKFILL_LIMIT, reverse=True
+                ):
+                    cursor = max(cursor, msg.id)
+                    if not msg.message:
+                        continue
+                    sender = msg.sender
+                    batch.append(Message(
+                        message_id=msg.id,
+                        chat_id=chat_id,
+                        chat_title=(title or f"Chat {chat_id}")[:255],
+                        user_id=msg.sender_id,
+                        username=getattr(sender, "username", None),
+                        sender_name=display_name(sender)[:255],
+                        content=msg.message,
+                        timestamp=msg.date.astimezone(timezone.utc).replace(tzinfo=None),
+                    ))
+                chunk.extend(batch)
+                # Unlimited depth on purpose: the archive must not have holes,
+                # so keep paging until the chat is caught up. The short pause is
+                # the only throttle, so a long outage does not look like a burst.
+                if len(batch) < BACKFILL_LIMIT:
+                    break
+                await asyncio.sleep(0.5)
+        except FloodWaitError as exc:
+            logger.warning("FloodWait during backfill: %ss", exc.seconds)
+            break
+        except Exception as exc:
+            logger.warning("Backfill failed for %s: %s", chat_id, exc)
+            continue
+
+        if chunk:
+            async with SessionLocal() as session:
+                session.add_all(chunk)
+                await session.commit()
+            filled += len(chunk)
+
+    if filled:
+        logger.info("Backfilled %s message(s) missed while offline.", filled)
+    else:
+        logger.info("Backfill: no gap to close.")
 
 
 async def main():
@@ -440,6 +739,13 @@ async def main():
             fatal_exit(5)
 
     await warm_entity_cache(client)
+    await backfill_gap(client)
+
+    # Background loops: names resolve off the hot path, and a five-minute
+    # per-chat check recovers anything Telegram stopped pushing.
+    asyncio.create_task(resolve_loop(client))
+    asyncio.create_task(gap_watchdog(client))
+
     logger.info("System active. Listening to live updates only.")
 
     attempt = 0

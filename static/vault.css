@@ -1,0 +1,373 @@
+@import url("/static/fonts/fonts.css");
+
+/* Telegram Vault — surface system, second edition.
+ *
+ * Reference: Telegram Web K for message anatomy, Linear for chrome restraint.
+ * One rule above all: red means "deleted", nothing else. Every other signal is
+ * carried by weight, rule, or position, so the deletion tag keeps its meaning.
+ *
+ * Type: Instrument Sans (UI), JetBrains Mono (all data), Instrument Serif
+ * (wordmark only — one display voice, not a second interface).
+ *
+ * Contrast on --ink-1:
+ *   --text 15.6:1   --text-2 7.9:1   --text-3 5.1:1
+ * --text-4 (3.7:1) is borders and disabled glyphs only, never copy.
+ */
+
+:root {
+    /* Graphite, not pure black: four steps of elevation. */
+    --ink-0: #0c0d11;
+    --ink-1: #131519;
+    --ink-2: #1a1d23;
+    --ink-3: #22262e;
+
+    --line: #262a33;
+    --line-strong: #353a46;
+
+    --text: #eef0f4;
+    --text-2: #a3aab6;
+    --text-3: #79818e;
+    --text-4: #59606b;
+
+    /* Iris carries "live" and "primary". Amber carries "attention". */
+    --accent: #7c6cf6;
+    --accent-soft: rgba(124, 108, 246, 0.14);
+    --accent-ink: #0b0a17;
+
+    --danger: #f06a6a;
+    --danger-soft: rgba(240, 106, 106, 0.12);
+    --warn: #e0a458;
+    --warn-soft: rgba(224, 164, 88, 0.12);
+    --info: #58aef0;
+    --info-soft: rgba(88, 174, 240, 0.12);
+
+    /* Uni Sans ticari bir aile; dosyasi static/fonts'a birakilirsa otomatik
+       devreye girer. Simdilik en yakin serbest esdegeri Outfit. */
+    --font-ui: 'Uni Sans', 'Outfit', 'Instrument Sans', ui-sans-serif, system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    --font-display: 'Uni Sans', 'Outfit', 'Instrument Sans', ui-sans-serif, sans-serif;
+
+    /* 4px rhythm. */
+    --s-1: 4px;
+    --s-2: 8px;
+    --s-3: 12px;
+    --s-4: 16px;
+    --s-5: 24px;
+    --s-6: 32px;
+    --s-7: 48px;
+
+    --radius: 8px;
+    --radius-sm: 5px;
+
+    /* Elevation is a hairline plus a soft pool — never a glow. */
+    --edge: 0 0 0 1px var(--line);
+    --lift: 0 1px 2px rgba(0, 0, 0, 0.45), 0 12px 32px -18px rgba(0, 0, 0, 0.75);
+    --focus: 0 0 0 2px var(--ink-0), 0 0 0 4px var(--accent);
+
+    /* Type scale. */
+    --fs-1: 10.5px;  /* micro labels */
+    --fs-2: 12px;    /* data */
+    --fs-3: 13.5px;  /* body */
+    --fs-4: 15px;    /* emphasis */
+    --fs-5: 22px;    /* card titles */
+    --fs-6: 34px;    /* page display */
+}
+
+/* Legacy aliases: page CSS predates the system, so it keeps resolving. */
+:root {
+    --bg: var(--ink-0);
+    --surface: var(--ink-1);
+    --surface-2: var(--ink-2);
+    --surface-3: var(--ink-3);
+    --border: var(--line);
+    --border-light: var(--line-strong);
+    --text-dim: var(--text-2);
+    --text-muted: var(--text-3);
+    --accent-dim: var(--accent-soft);
+    --red: var(--danger);
+    --red-dim: var(--danger-soft);
+    --yellow: var(--warn);
+    --blue: var(--info);
+    --danger-dim: var(--danger-soft);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { color-scheme: dark; }
+
+body {
+    margin: 0;
+    font-family: var(--font-ui);
+    font-size: var(--fs-3);
+    font-weight: 400;
+    line-height: 1.5;
+    background: var(--ink-0);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4 {
+    font-family: var(--font-ui);
+    letter-spacing: -0.012em;
+    line-height: 1.2;
+}
+
+/* ---- Browser surfaces ---- */
+
+::selection { background: rgba(124, 108, 246, 0.3); color: #fff; }
+
+:focus-visible {
+    outline: none;
+    box-shadow: var(--focus);
+    border-radius: var(--radius-sm);
+}
+
+input, textarea, select { caret-color: var(--accent); }
+
+* { scrollbar-color: var(--line-strong) transparent; scrollbar-width: thin; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+    background: var(--line-strong);
+    border: 3px solid var(--ink-0);
+    border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover { background: #454b59; }
+
+/* Numerals that never shift under a live feed. */
+.mono,
+.n, .stat-value, .kpi-value, .cell-time, .cell-group-id, .cell-sender-id,
+.pagination-info, .rank-count, .detail-value.mono, .measure,
+.strip-v, .rail-metric b, .insp-row b {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
+}
+
+/* ---- Controls ---- */
+
+.btn,
+.btn-primary,
+.btn-quiet,
+.btn-page,
+.btn-logout {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s-2);
+    height: 34px;
+    padding: 0 14px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+    background: var(--ink-2);
+    color: var(--text);
+    font-family: var(--font-ui);
+    font-size: var(--fs-2);
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease,
+                transform 0.08s ease;
+}
+
+.btn:hover, .btn-page:hover, .btn-logout:hover, .btn-quiet:hover {
+    background: var(--ink-3);
+    border-color: #454b59;
+}
+
+.btn:active, .btn-page:active, .btn-primary:active { transform: translateY(1px); }
+
+.btn-primary {
+    background: var(--accent);
+    border-color: transparent;
+    color: var(--accent-ink);
+    font-weight: 600;
+}
+.btn-primary:hover { background: #8b7df8; border-color: transparent; }
+
+.btn-quiet {
+    background: transparent;
+    border-color: var(--line);
+    color: var(--text-2);
+}
+
+.btn-page {
+    height: 32px;
+    background: transparent;
+    color: var(--text-2);
+}
+.btn-page:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    background: transparent;
+    border-color: var(--line);
+}
+
+.input,
+input[type="text"],
+input[type="password"],
+input[type="search"] {
+    height: 34px;
+    padding: 0 11px;
+    width: 100%;
+    background: var(--ink-0);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-family: var(--font-ui);
+    font-size: var(--fs-3);
+    transition: border-color 0.15s ease, background 0.15s ease;
+}
+.input:hover, input[type="text"]:hover { border-color: var(--line-strong); }
+.input:focus, input[type="text"]:focus, input[type="password"]:focus {
+    outline: none;
+    border-color: var(--accent);
+    background: var(--ink-1);
+}
+
+label {
+    font-size: var(--fs-1);
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    font-weight: 600;
+}
+
+/* ---- Surfaces ---- */
+
+.card,
+.panel,
+.rail-panel,
+.rail-side,
+.table-wrap {
+    background: var(--ink-1);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+}
+
+/* ---- Primitives ---- */
+
+.tag-del {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--danger-soft);
+    border: 1px solid rgba(240, 106, 106, 0.32);
+    color: var(--danger);
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-family: var(--font-ui);
+    font-size: var(--fs-1);
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    line-height: 1.7;
+    white-space: nowrap;
+}
+
+.tag-del::before {
+    content: '';
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: currentColor;
+    flex: 0 0 auto;
+    /* One authored moment: it announces itself once, then goes quiet. */
+    animation: del-announce 2.4s ease-out 1;
+}
+
+@keyframes del-announce {
+    0%   { opacity: 0.2; transform: scale(0.6); }
+    100% { opacity: 1; transform: scale(1); }
+}
+
+.empty-state {
+    padding: var(--s-6) var(--s-5);
+    text-align: center;
+    color: var(--text-3);
+    font-size: var(--fs-3);
+    line-height: 1.7;
+}
+
+.empty-state strong {
+    display: block;
+    color: var(--text);
+    font-size: var(--fs-4);
+    font-weight: 600;
+    margin-bottom: var(--s-1);
+}
+
+.empty-state .hint {
+    display: block;
+    margin-top: var(--s-2);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-3);
+}
+
+/* Honest connection state: no green dot while the socket is down. */
+.link-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--fs-1);
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+}
+.link-state::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+}
+.link-state[data-state="live"]::before { animation: live-pulse 2s ease-in-out infinite; }
+.link-state[data-state="down"] { color: var(--warn); }
+.link-state[data-state="down"]::before { animation: none; }
+
+@keyframes live-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+
+/* Mark: the glyph itself, no tile. Height is fixed so the wordmark next to it
+   keeps one baseline; width follows the artwork's aspect ratio. */
+.brand-mark {
+    height: 42px;
+    width: auto;
+    display: block;
+    flex: 0 0 auto;
+}
+
+.brand-name {
+    font-family: var(--font-ui);
+    font-size: 26px;
+    font-weight: 600;
+    letter-spacing: -0.025em;
+    color: var(--text);
+    line-height: 1;
+    white-space: nowrap;
+}
+.brand-name span { color: var(--text-3); font-weight: 400; }
+
+/* Wordmark: the one serif moment on the surface. */
+.wordmark {
+    font-family: var(--font-ui);
+    font-size: 21px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: var(--text);
+    line-height: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+    }
+}
