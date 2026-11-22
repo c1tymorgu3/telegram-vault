@@ -11,22 +11,22 @@ Kullanim:
 
 import asyncio
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from database import SessionLocal, init_db
 from digest import summarize_day, summarize_segment
-
-TRT = timezone(timedelta(hours=3))
+from timeutil import TRT, day_bounds_trt, trt_date_window, utc_now
 
 
 def trt_day_bounds(day: datetime | None = None) -> tuple[datetime, datetime]:
-    """TRT gununun UTC cinsinden [baslangic, bitis) araligi."""
-    # Cron 00:00 TRT'de calisir; o anda "bugun" yeni gun oldugu icin
-    # bir dakika geriye bakip az once biten gunu hedefliyoruz.
-    now_trt = (day or (datetime.now(TRT) - timedelta(minutes=1))).astimezone(TRT)
-    start_trt = now_trt.replace(hour=0, minute=0, second=0, microsecond=0)
-    start = start_trt.astimezone(timezone.utc).replace(tzinfo=None)
-    return start, start + timedelta(days=1)
+    """TRT gununun UTC cinsinden [baslangic, bitis) araligi.
+
+    day verilirse o TRT takvim gunu kullanilir. Verilmezse cron 00:00 TRT'de
+    calistigi icin bir dakika geriye bakilir ve az once biten gun hedeflenir.
+    """
+    if day is not None:
+        return trt_date_window(day)
+    return day_bounds_trt(utc_now() - timedelta(minutes=1))
 
 
 async def run(day: datetime | None = None) -> None:
@@ -37,7 +37,7 @@ async def run(day: datetime | None = None) -> None:
         digest = await summarize_day(db, window=(start, end))
 
         payload = digest.payload or {}
-        print(f"[{datetime.utcnow():%Y-%m-%d %H:%M}Z] gunluk ozet hazir")
+        print(f"[{utc_now():%Y-%m-%d %H:%M}Z] gunluk ozet hazir")
         print(f"  aralik   : {start:%d.%m %H:%M} - {end:%d.%m %H:%M} UTC")
         print(f"  dilim    : {len(segments)} | mesaj: {digest.msg_count}")
         print(f"  token    : {digest.tokens_in}+{digest.tokens_out} | maliyet: ${digest.cost:.4f}")

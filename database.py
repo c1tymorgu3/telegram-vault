@@ -1,10 +1,27 @@
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-from sqlalchemy.orm import declarative_base, Mapped, mapped_column
-from sqlalchemy import (BigInteger, String, Text, DateTime, Boolean, Integer,
-                        Float, JSON, event)
-from datetime import datetime
-import config
 import asyncio
+from datetime import datetime
+
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    DateTime,
+    Float,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    event,
+)
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy.orm import Mapped, declarative_base, mapped_column
+
+import config
+from timeutil import utc_now
 
 engine = create_async_engine(config.DATABASE_URL, echo=False)
 
@@ -26,13 +43,22 @@ def _sqlite_pragmas(dbapi_connection, _record):
     finally:
         cursor.close()
 
-SessionLocal = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+SessionLocal = async_sessionmaker(
+    bind=engine, class_=AsyncSession, expire_on_commit=False
+)
 
 Base = declarative_base()
 
 
 class Message(Base):
     __tablename__ = 'messages'
+    # (chat_id, message_id) Telegram'da dogal anahtar: message_id sohbet basina
+    # sayilir. Backfill ile canli dinleyici ayni mesaji yazinca cift kayit
+    # olusuyordu; unique index bunu DB seviyesinde keser (unique index'i de
+    # beraberinde getirir). Eski SQLite/Postgres dosyalari icin migrations/.
+    __table_args__ = (
+        UniqueConstraint('chat_id', 'message_id', name='uq_messages_chat_message'),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     message_id: Mapped[int] = mapped_column(BigInteger)
@@ -44,6 +70,10 @@ class Message(Base):
     content: Mapped[str] = mapped_column(Text)
     timestamp: Mapped[datetime] = mapped_column(DateTime, index=True)
     is_deleted: Mapped[bool] = mapped_column(default=False)
+    # Duzenleme izi: satir ilk yazildiginda NULL kalir, MessageEdited
+    # handler'i content ile birlikte naive UTC "simdi" yazar. NULL = hic
+    # duzenlenmedi. Mevcut dosyalar icin migrations/ gerekir.
+    edited_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
 
 
 class Chat(Base):
@@ -72,9 +102,16 @@ class Digest(Base):
     mesaj id'leri tasidigi icin her iddia arsivde dogrulanabilir.
     """
     __tablename__ = "digests"
+    # Sorgular chat_id + window_start ile geliyor (dilim onbellegi).
+    __table_args__ = (
+        Index("ix_digests_chat_window", "chat_id", "window_start"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     kind: Mapped[str] = mapped_column(String(16), index=True)          # segment | daily
+    # Gruplama anahtari: baslik benzersiz degil. chat_id kolonu eklenmeden
+    # once yazilmis satirlarda NULL kalir; kod bunlari baslikla esler.
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=True)
     chat_title: Mapped[str] = mapped_column(String(255), nullable=True)
     window_start: Mapped[datetime] = mapped_column(DateTime, index=True)
     window_end: Mapped[datetime] = mapped_column(DateTime)
@@ -87,7 +124,7 @@ class Digest(Base):
     evidence_ok: Mapped[int] = mapped_column(default=0)
     evidence_total: Mapped[int] = mapped_column(default=0)
     payload: Mapped[dict] = mapped_column(JSON)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.utcnow())
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
 
 
 class Profile(Base):
@@ -111,7 +148,7 @@ class Profile(Base):
     model: Mapped[str] = mapped_column(String(64), nullable=True)
     prompt_v: Mapped[int] = mapped_column(default=1)
     payload: Mapped[dict] = mapped_column(JSON)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.utcnow())
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
 
 
 async def init_db():

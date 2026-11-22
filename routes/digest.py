@@ -1,16 +1,16 @@
 """Ozet ucnoktalari: dilim ozeti, gunluk brif, gecmis listesi."""
 
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import Digest
 from digest import DigestError, summarize_day, summarize_segment
 from routes.auth import get_db, is_authenticated
+from timeutil import day_bounds_trt, trt_date_window, utc_now
 
 router = APIRouter()
 
@@ -19,6 +19,7 @@ def _serialize(d: Digest) -> dict:
     return {
         "id": d.id,
         "kind": d.kind,
+        "chat_id": d.chat_id,
         "chat_title": d.chat_title,
         "window_start": d.window_start.isoformat() + "Z",
         "window_end": d.window_end.isoformat() + "Z",
@@ -40,22 +41,23 @@ async def digest_segment(
     request: Request,
     hours: int = Query(6, ge=1, le=24),
     force: bool = Query(False),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db),  # noqa: B008
 ):
     """Son N saatin dilim ozetlerini uretir (2 saatlik parcalar)."""
     if not is_authenticated(request):
         return JSONResponse(status_code=401, content={"detail": "Yetkisiz"})
 
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = utc_now()
     start = now - timedelta(hours=hours)
-    before = (await db.execute(select(func.max(Digest.id)))).scalar() or 0
+    # Cache'ten donen satirlar eski maliyeti tasir; onbellekteki bir dilim
+    # yeniden uretildiginde id'si degismedigi icin "bu istekte harcanan"
+    # id karsilastirmasiyla bulunamaz, summarize_segment bildirir.
+    fresh: list[Digest] = []
     try:
-        made = await summarize_segment(db, start, now, force=force)
+        made = await summarize_segment(db, start, now, force=force, fresh=fresh)
     except DigestError as exc:
         return JSONResponse(status_code=502, content={"detail": str(exc)})
 
-    # Cache'ten donen satirlar eski maliyeti tasir; "bu istekte harcanan" ayri.
-    fresh = [d for d in made if d.id > before]
     return {
         "segments": len(made),
         "fresh": len(fresh),
@@ -71,26 +73,35 @@ async def digest_segment(
 @router.post("/api/digest/daily")
 async def digest_daily(
     request: Request,
-    date: Optional[str] = None,
+    date: str | None = None,
     force: bool = Query(False),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db),  # noqa: B008
 ):
-    """Dilim ozetlerinden gunluk brif uretir. date=GG.AA.YYYY veya YYYY-MM-DD."""
+    """Dilim ozetlerinden gunluk brif uretir. date=GG.AA.YYYY veya YYYY-MM-DD.
+
+    Gun, TRT takvim gunu olarak yorumlanir: 00:00-24:00 TRT, UTC'de bir onceki
+    gunun 21:00'inden baslar. UTC gunu kullanmak brifi 3 saat kaydiriyordu.
+    """
     if not is_authenticated(request):
         return JSONResponse(status_code=401, content={"detail": "Yetkisiz"})
 
-    day = datetime.now(timezone.utc).replace(tzinfo=None)
     if date:
+        parsed = None
         for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
             try:
-                day = datetime.strptime(date, fmt)
+                parsed = datetime.strptime(date, fmt)
                 break
             except ValueError:
                 continue
-    day = day.replace(hour=0, minute=0, second=0, microsecond=0)
+        if parsed is None:
+            return JSONResponse(status_code=400,
+                                content={"detail": "Tarih GG.AA.YYYY veya YYYY-MM-DD olmali"})
+        window = trt_date_window(parsed)
+    else:
+        window = day_bounds_trt()
 
     try:
-        digest = await summarize_day(db, day, force=force)
+        digest = await summarize_day(db, window=window, force=force)
     except DigestError as exc:
         return JSONResponse(status_code=502, content={"detail": str(exc)})
 
@@ -100,9 +111,9 @@ async def digest_daily(
 @router.get("/api/digests")
 async def list_digests(
     request: Request,
-    kind: Optional[str] = None,
+    kind: str | None = None,
     limit: int = Query(20, ge=1, le=100),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db),  # noqa: B008
 ):
     if not is_authenticated(request):
         return JSONResponse(status_code=401, content={"detail": "Yetkisiz"})
