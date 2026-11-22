@@ -1,0 +1,53 @@
+# Ruff yapilandirmasi (CI: .github/workflows/ci.yml -> "python -m ruff check .").
+#
+# Secim bilincli, dar tutuldu: sozdizimi/olu kod (E, F, W), import sirasi (I),
+# modern Python (UP), yaygin hata kaliplari (B), guvenlik (S), basitlestirme
+# (SIM), asyncio tuzaklari (ASYNC), zaman dilimi (DTZ).
+#
+# per-file-ignores yalnizca mevcut borcu gizler, kural setini daraltmaz: ayni
+# kural yeni dosyalarda calismaya devam eder. Kapatilan kalemler denetim
+# raporunda dosya:satir olarak listelendi.
+
+target-version = "py312"
+line-length = 100
+
+extend-exclude = [".venv", "migrations"]
+
+[lint]
+select = ["E", "F", "W", "I", "UP", "B", "S", "SIM", "ASYNC", "DTZ"]
+
+[lint.per-file-ignores]
+# B008 FastAPI'de yanlis pozitif: Depends()/Query() varsayilan arguman olarak
+# kullanilir. Yalnizca HTTP katmaninda kapatildi, global degil.
+"routes/*.py" = ["B008"]
+
+"routes/auth.py" = ["DTZ005"]
+"routes/digest.py" = ["DTZ007"]
+
+# Panel: uzun SQL/HTML satirlari, "is_deleted == True" karsilastirmalari ve
+# datetime.utcnow() (naive UTC kurali; timeutil.utc_now'a tasinmali).
+# S608: sorgular parametreli, ORDER BY parcasi beyaz listeden geliyor - elle
+# dogrulanmali.
+"routes/dashboard.py" = [
+    "DTZ001", "DTZ003", "DTZ007", "E501", "E712", "I001", "S608", "W293",
+]
+"routes/messages.py" = ["E501"]
+
+# Olay dongusu: tek bir mesaj yuzunden dongu olmemeli; hata log'lanip devam
+# ediliyor. S112 (except: continue) ve SIM105 (pass) bilincli.
+"bot.py" = ["S112", "S311", "SIM105", "UP015", "UP017"]
+
+"digest.py" = ["E501"]
+
+# Tek seferlik giris betigi: bilincli senkron dosya/sleep kullanimi.
+"login_once.py" = ["ASYNC230", "ASYNC240", "ASYNC251", "SIM115"]
+
+# Yerel gelistirme varsayilanlari; config.py bos/kisa degeri reddediyor.
+"config.py" = ["S105"]
+
+# Demo verisi ureten betikler: random kriptografik amacli degil.
+"seed_*.py" = ["S311"]
+
+# Testler: assert dogal arac, sahte parola sabitleri ve naive UTC fixture'lari
+# bilincli; sys.path kurulumu import'tan once yapiliyor.
+"tests/*.py" = ["S101", "S105", "DTZ001", "E402"]
