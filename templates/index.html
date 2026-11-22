@@ -524,15 +524,26 @@
         }
         @media (prefers-reduced-motion: reduce) {
         }
+
+        /* ---- DOM ile kurulan bloklar icin yardimci siniflar ----
+           Eskiden style="..." ile verilen tek kullanimlik kurallar burada
+           duruyor; boylece uretilen HTML'de satir ici stil kalmadi. */
+        .detail-gap { margin-top: 12px; }
+        .detail-payload {
+            background: rgba(0,0,0,0.3); padding: 12px; border-radius: 4px;
+            white-space: pre-wrap; font-size: 13px;
+        }
+        .digest-card h3.sec { margin-top: 10px; }
+        .digest-card > h3:first-of-type { margin-top: 0; }
     </style>
 </head>
 <body>
     <!-- Modal -->
-    <div class="modal-overlay" id="modal" onclick="closeModal(event)">
-        <div class="modal-box" onclick="event.stopPropagation()">
+    <div class="modal-overlay" id="modal" data-action="modal-backdrop">
+        <div class="modal-box">
             <div class="modal-header">
                 <div class="modal-title">Mesaj Detayları</div>
-                <button class="modal-close" onclick="closeModal()">&times;</button>
+                <button class="modal-close" type="button" data-action="modal-close">&times;</button>
             </div>
             <div class="modal-body">
                 <div class="detail-grid" id="modal-grid"></div>
@@ -775,10 +786,14 @@
                     : 'No records found';
 
                 const tb = $('tbody');
-                tb.innerHTML = '';
+                tb.replaceChildren();
 
                 if (data.length === 0) {
-                    tb.innerHTML = '<tr><td colspan="4" class="empty-state">No results found.</td></tr>';
+                    const emptyTr = document.createElement('tr');
+                    const emptyTd = el('td', 'empty-state', 'No results found.');
+                    emptyTd.colSpan = 4;
+                    emptyTr.appendChild(emptyTd);
+                    tb.appendChild(emptyTr);
                 } else {
                     data.forEach((m, i) => {
                         tb.appendChild(createRow(m, i));
@@ -791,78 +806,96 @@
             } catch(e) { console.error(e); }
         }
 
+        // Kucuk DOM yardimcisi: metin her zaman textContent ile yazilir,
+        // yani veri HTML olarak yorumlanmaz.
+        function el(tag, cls, text) {
+            const n = document.createElement(tag);
+            if (cls) n.className = cls;
+            if (text !== undefined && text !== null) n.textContent = String(text);
+            return n;
+        }
+
         function createRow(m, i) {
             const tr = document.createElement('tr');
             tr.onclick = () => detail(m);
-            tr.setAttribute('data-msgid', m.message_id);
-            tr.setAttribute('data-chatid', m.chat_id);
+            tr.setAttribute('data-msgid', num(m.message_id, ''));
+            tr.setAttribute('data-chatid', num(m.chat_id, ''));
             tr.tabIndex = 0;
             tr.setAttribute('role', 'button');
             tr.setAttribute('aria-label', `Open detail for message from ${m.sender_name || 'unknown sender'}`);
             if (m.is_deleted) tr.setAttribute('data-deleted', '1');
-            const t = new Date(m.timestamp);
-            
-            let contentHtml = esc(m.content);
+
+            // Zaman
+            const tdTime = el('td', 'col-time cell-time');
+            tdTime.appendChild(document.createTextNode(fmtDate(m.timestamp)));
+            tdTime.appendChild(document.createElement('br'));
+            tdTime.appendChild(document.createTextNode(fmtTime(m.timestamp)));
+            tr.appendChild(tdTime);
+
+            // Grup — baslik serbest metin, textContent ile girer.
+            const tdGroup = el('td', 'col-group');
+            tdGroup.appendChild(el('div', 'cell-group-name', m.chat_title || 'Private'));
+            tdGroup.appendChild(el('div', 'cell-group-id', num(m.chat_id)));
+            tr.appendChild(tdGroup);
+
+            // Gonderen — gorunen ad ve kullanici adi da serbest metin.
+            const tdSender = el('td', 'col-sender');
+            tdSender.appendChild(el('div', 'cell-sender-name', m.sender_name || ''));
+            tdSender.appendChild(el('div', 'cell-sender-username', m.username ? '@' + m.username : '—'));
+            tdSender.appendChild(el('div', 'cell-sender-id', 'ID: ' + num(m.user_id)));
+            tr.appendChild(tdSender);
+
+            // Mesaj govdesi
+            const tdContent = el('td', 'cell-content');
             if (m.is_deleted) {
-                contentHtml = `<span class="tag-del">Deleted</span><br>` + contentHtml;
+                tdContent.appendChild(el('span', 'tag-del', 'Deleted'));
+                tdContent.appendChild(document.createElement('br'));
             }
-            
-            tr.innerHTML = `
-                <td class="col-time cell-time">${fmtDate(m.timestamp)}<br>${fmtTime(m.timestamp)}</td>
-                <td class="col-group">
-                    <div class="cell-group-name">${esc(m.chat_title || 'Private')}</div>
-                    <div class="cell-group-id">${m.chat_id}</div>
-                </td>
-                <td class="col-sender">
-                    <div class="cell-sender-name">${esc(m.sender_name)}</div>
-                    <div class="cell-sender-username">${m.username ? '@' + esc(m.username) : '—'}</div>
-                    <div class="cell-sender-id">ID: ${m.user_id}</div>
-                </td>
-                <td class="cell-content">${contentHtml}</td>`;
+            tdContent.appendChild(document.createTextNode(m.content == null ? '' : String(m.content)));
+            tr.appendChild(tdContent);
+
             return tr;
         }
 
         function detail(m) {
-            const t = new Date(m.timestamp);
-            $('modal-grid').innerHTML = `
-                <div class="detail-item">
-                    <div class="detail-label">Date & Time</div>
-                    <div class="detail-value mono">${fmtDT(m.timestamp)}</div>
-                </div>
-                <div class="detail-item">
-                    <div class="detail-label">Message ID</div>
-                    <div class="detail-value mono">${m.message_id}</div>
-                </div>
-                <div class="detail-item">
-                    <div class="detail-label">Group / Channel</div>
-                    <div class="detail-value">${esc(m.chat_title || 'Private')}</div>
-                </div>
-                <div class="detail-item">
-                    <div class="detail-label">Group ID</div>
-                    <div class="detail-value mono">${m.chat_id}</div>
-                </div>
-                <div class="detail-item">
-                    <div class="detail-label">Sender</div>
-                    <div class="detail-value">${esc(m.sender_name)}</div>
-                <div class="detail-item">
-                    <div class="detail-label">Username</div>
-                    <div class="detail-value accent mono">${m.username ? '@' + esc(m.username) : '—'}</div>
-                </div>
-                <div class="detail-item" style="grid-column: span 2;">
-                    <div class="detail-label">Message Content</div>
-                    <div class="detail-value" style="background: rgba(0,0,0,0.3); padding: 12px; border-radius: 4px; white-space: pre-wrap; font-size: 13px;">${esc(m.content)}</div>
-                </div>
-            `;
+            const grid = $('modal-grid');
+            grid.replaceChildren();
+
+            // Kutu uretici: etiket + deger. Deger her zaman textContent.
+            const item = (label, value, cls) => {
+                const box = el('div', 'detail-item');
+                box.appendChild(el('div', 'detail-label', label));
+                box.appendChild(el('div', 'detail-value' + (cls ? ' ' + cls : ''), value));
+                return box;
+            };
+
             // Eger silinmis mesajsa modal icinde de goster
             if (m.is_deleted) {
-                $('modal-grid').innerHTML = `<div class="detail-item" style="grid-column: span 2;"><span class="tag-del">Deleted</span></div>` + $('modal-grid').innerHTML;
+                const del = el('div', 'detail-item detail-full');
+                del.appendChild(el('span', 'tag-del', 'Deleted'));
+                grid.appendChild(del);
             }
-            
-            $('modal-grid').innerHTML += `
-                <div class="detail-item" style="grid-column: span 2; margin-top: 12px;">
-                    <button class="insp-cta" onclick="closeModal(); loadProfile(${m.user_id})">Open sender profile</button>
-                </div>
-            `;
+
+            grid.appendChild(item('Date & Time', fmtDT(m.timestamp), 'mono'));
+            grid.appendChild(item('Message ID', num(m.message_id), 'mono'));
+            grid.appendChild(item('Group / Channel', m.chat_title || 'Private'));
+            grid.appendChild(item('Group ID', num(m.chat_id), 'mono'));
+            grid.appendChild(item('Sender', m.sender_name || ''));
+            grid.appendChild(item('Username', m.username ? '@' + m.username : '—', 'accent mono'));
+
+            const content = el('div', 'detail-item detail-full');
+            content.appendChild(el('div', 'detail-label', 'Message Content'));
+            content.appendChild(el('div', 'detail-value detail-payload', m.content == null ? '' : String(m.content)));
+            grid.appendChild(content);
+
+            const foot = el('div', 'detail-item detail-full detail-gap');
+            const btn = el('button', 'insp-cta', 'Open sender profile');
+            btn.type = 'button';
+            btn.dataset.action = 'open-profile';
+            btn.dataset.uid = num(m.user_id, '');
+            foot.appendChild(btn);
+            grid.appendChild(foot);
+
             $('modal').classList.add('open');
         }
 
@@ -883,105 +916,190 @@
         async function loadDossier(userId, force = false) {
             const box = $('dossier-box');
             if (!box) return;
-            const cached = await fetch(`/api/profile/${userId}/dossier`).then(r => r.json()).catch(() => ({}));
+            const cached = await fetch(`/api/profile/${encodeURIComponent(userId)}/dossier`).then(r => r.json()).catch(() => ({}));
             if (cached.exists) renderDossier(cached);
-            else box.innerHTML = '<div class="insp-empty">Henüz profil yok.</div>';
+            else box.replaceChildren(el('div', 'insp-empty', 'Henüz profil yok.'));
         }
 
+        // Dossier tamamen LLM ciktisi: her alan textContent ile yazilir,
+        // kanit kimlikleri sadece sayi ise gosterilir.
         function renderDossier(d) {
             const box = $('dossier-box');
             if (!box) return;
             const p = d.payload || {};
-            const ev = (ids) => (ids || []).slice(0, 3).map(i => `<span class="digest-ev">${i}</span>`).join(' ');
-            const sec = (p.sectors || []).map(x =>
-                `<div class="dossier-item"><b>${x.name}</b>${x.note ? `<span>${x.note}</span>` : ''}
-                 ${x.first_seen ? `<em>${x.first_seen} → ${x.last_seen || '?'}</em>` : ''}</div>`).join('');
-            const self = (p.self_disclosed || []).map(x =>
-                `<div class="dossier-item"><b>${x.category || 'diger'}</b><span>${x.claim}</span>${ev(x.evidence)}</div>`).join('');
             const beh = p.behavior || {};
-            box.innerHTML = `
-                <div class="dossier-summary">${p.summary || ''}</div>
-                <div class="dossier-meta">rol: ${p.role || '?'} · ${beh.activity || '?'} · ${(beh.active_hours || []).join(', ')}
-                    · $${(d.cost || 0).toFixed(4)}</div>
-                ${sec ? `<div class="dossier-sec"><h4>Sektör geçmişi</h4>${sec}</div>` : ''}
-                ${self ? `<div class="dossier-sec"><h4>Kendi hakkında</h4>${self}</div>` : ''}
-                ${(p.hearsay || []).length ? `<div class="dossier-sec"><h4>Duyum</h4>${p.hearsay.map(h => `<div class="dossier-item"><span>${h.claim}</span>${ev(h.evidence)}</div>`).join('')}</div>` : ''}
-                ${(p.aliases || []).length ? `<div class="dossier-sec"><h4>Diğer isimler</h4><em>${p.aliases.join(' · ')}</em></div>` : ''}`;
+            const frag = document.createDocumentFragment();
+
+            const evSpan = (ids) => {
+                const span = el('span', 'digest-ev',
+                    (ids || []).slice(0, 3).map(i => num(i, '?')).join(' '));
+                return span;
+            };
+            const section = (title, nodes) => {
+                if (!nodes.length) return;
+                const sec = el('div', 'dossier-sec');
+                sec.appendChild(el('h4', null, title));
+                nodes.forEach(n => sec.appendChild(n));
+                frag.appendChild(sec);
+            };
+
+            frag.appendChild(richEl(p.summary || '', 'div', 'dossier-summary'));
+
+            const cost = Number(d.cost);
+            frag.appendChild(el('div', 'dossier-meta',
+                `rol: ${p.role || '?'} · ${beh.activity || '?'} · `
+                + `${(Array.isArray(beh.active_hours) ? beh.active_hours : []).map(h => num(h, '?')).join(', ')}`
+                + ` · $${(Number.isFinite(cost) ? cost : 0).toFixed(4)}`));
+
+            section('Sektör geçmişi', (p.sectors || []).map(x => {
+                const item = el('div', 'dossier-item');
+                item.appendChild(el('b', null, x.name || ''));
+                if (x.note) item.appendChild(richEl(x.note, 'span'));
+                if (x.first_seen) item.appendChild(el('em', null, `${x.first_seen} → ${x.last_seen || '?'}`));
+                return item;
+            }));
+
+            section('Kendi hakkında', (p.self_disclosed || []).map(x => {
+                const item = el('div', 'dossier-item');
+                item.appendChild(el('b', null, x.category || 'diger'));
+                item.appendChild(richEl(x.claim || '', 'span'));
+                item.appendChild(evSpan(x.evidence));
+                return item;
+            }));
+
+            section('Duyum', (p.hearsay || []).map(h => {
+                const item = el('div', 'dossier-item');
+                item.appendChild(richEl(h.claim || '', 'span'));
+                item.appendChild(evSpan(h.evidence));
+                return item;
+            }));
+
+            if ((p.aliases || []).length) {
+                const sec = el('div', 'dossier-sec');
+                sec.appendChild(el('h4', null, 'Diğer isimler'));
+                sec.appendChild(el('em', null, p.aliases.join(' · ')));
+                frag.appendChild(sec);
+            }
+
+            box.replaceChildren(frag);
         }
 
-        document.addEventListener('click', async (e) => {
-            const btn = e.target.closest('#dossier-btn');
-            if (!btn) return;
+        async function runDossier(btn) {
             btn.disabled = true;
             btn.textContent = 'Çıkarılıyor…';
             const box = $('dossier-box');
-            if (box) box.innerHTML = '<div class="insp-empty">Mesajlar taranıyor, 15-40 saniye…</div>';
+            if (box) box.replaceChildren(el('div', 'insp-empty', 'Mesajlar taranıyor, 15-40 saniye…'));
             try {
-                const r = await fetch(`/api/profile/${btn.dataset.uid}/dossier`, { method: 'POST' });
+                const r = await fetch(`/api/profile/${encodeURIComponent(btn.dataset.uid)}/dossier`, { method: 'POST' });
                 const d = await r.json();
                 if (!r.ok) throw new Error(d.detail || 'profil çıkarılamadı');
                 renderDossier(d);
                 btn.textContent = 'Yeniden çıkar';
             } catch (err) {
-                if (box) box.innerHTML = `<div class="insp-empty">${err.message}</div>`;
+                if (box) box.replaceChildren(el('div', 'insp-empty', err.message));
                 btn.textContent = 'Profili çıkar';
             }
             btn.disabled = false;
+        }
+
+        // Tek delege: inline on* attribute'lari yerine data-action kullaniyoruz.
+        // CSP'den unsafe-inline cikarilinca da aynen calisir.
+        document.addEventListener('click', async (e) => {
+            const t = e.target.closest('[data-action]');
+            if (t) {
+                const act = t.dataset.action;
+                // Ortuye tiklandiysa kapat; kutu icindeki tiklamalar sizmasin.
+                if (act === 'modal-backdrop') { if (e.target === t) closeModal(e); return; }
+                if (act === 'modal-close') { closeModal(); return; }
+                if (act === 'open-profile') { closeModal(); loadProfile(t.dataset.uid); return; }
+            }
+            const btn = e.target.closest('#dossier-btn');
+            if (btn) await runDossier(btn);
         });
 
         async function loadProfile(userId) {
             currentProfileId = userId;
             openInspector('Sender profile');
             writeHash(false);
-            $('inspector-body').innerHTML = '<div class="insp-empty">Loading profile…</div>';
+            const body = $('inspector-body');
+            body.replaceChildren(el('div', 'insp-empty', 'Loading profile…'));
             try {
-                const r = await fetch('/api/profile/' + userId);
+                const r = await fetch('/api/profile/' + encodeURIComponent(userId));
                 const p = await r.json();
                 if (p.error) {
-                    $('inspector-body').innerHTML = `<div class="insp-empty">${esc(p.error)}</div>`;
+                    body.replaceChildren(el('div', 'insp-empty', p.error));
                     return;
                 }
 
-                const groupTotal = p.groups.reduce((sum, g) => sum + g.count, 0) || 1;
-                const groups = p.groups.map(g => `
-                    <div class="insp-bar-row">
-                        <div class="insp-bar" style="width:${Math.max(3, Math.round((g.count / groupTotal) * 96))}px"></div>
-                        <div class="insp-bar-name">${esc(g.name)}</div>
-                        <em>${g.count}</em>
-                    </div>`).join('');
+                const frag = document.createDocumentFragment();
+                const row = (label, value) => {
+                    const box = el('div', 'insp-row');
+                    box.appendChild(el('span', null, label));
+                    box.appendChild(el('b', null, value));
+                    return box;
+                };
+                frag.appendChild(row('Name', p.sender_name || ''));
+                frag.appendChild(row('Username', p.username && p.username !== 'None' ? '@' + p.username : '—'));
+                frag.appendChild(row('User ID', num(p.user_id)));
+                frag.appendChild(row('Messages', (Number(p.total) || 0).toLocaleString('en-US')));
+                frag.appendChild(row('First seen', fmtDate(p.first_seen)));
+                frag.appendChild(row('Last seen', fmtDate(p.last_seen)));
 
-                const maxHour = Math.max(...Object.values(p.hours), 1);
-                let hours = '';
+                // Grup dagilimi: genislik CSSOM ile veriliyor, HTML'e stil yazilmiyor.
+                const gwrap = el('div', 'insp-block');
+                gwrap.appendChild(el('h3', null, 'Where they post'));
+                const groups = Array.isArray(p.groups) ? p.groups : [];
+                const groupTotal = groups.reduce((sum, g) => sum + (Number(g.count) || 0), 0) || 1;
+                if (!groups.length) gwrap.appendChild(el('div', 'insp-empty', 'No group activity recorded.'));
+                groups.forEach(g => {
+                    const line = el('div', 'insp-bar-row');
+                    const bar = el('div', 'insp-bar');
+                    const w = Math.max(3, Math.round(((Number(g.count) || 0) / groupTotal) * 96));
+                    bar.style.width = (Number.isFinite(w) ? w : 3) + 'px';
+                    line.appendChild(bar);
+                    line.appendChild(el('div', 'insp-bar-name', g.name || ''));
+                    line.appendChild(el('em', null, num(g.count, '0')));
+                    gwrap.appendChild(line);
+                });
+                frag.appendChild(gwrap);
+
+                const hwrap = el('div', 'insp-block');
+                hwrap.appendChild(el('h3', null, 'Activity by hour · UTC'));
+                const hoursBox = el('div', 'insp-hours');
+                const hourMap = p.hours || {};
+                const maxHour = Math.max(...Object.values(hourMap).map(Number).filter(Number.isFinite), 1) || 1;
                 for (let i = 0; i < 24; i++) {
-                    const c = p.hours[i] || 0;
-                    hours += `<div data-on="${c > 0 ? 1 : 0}" style="height:${Math.max(2, Math.round((c / maxHour) * 100))}%" title="${String(i).padStart(2, '0')}:00 UTC · ${c}"></div>`;
+                    const c = Number(hourMap[i]) || 0;
+                    const bar = el('div');
+                    bar.dataset.on = c > 0 ? '1' : '0';
+                    bar.style.height = Math.max(2, Math.round((c / maxHour) * 100)) + '%';
+                    bar.title = `${String(i).padStart(2, '0')}:00 UTC · ${c}`;
+                    hoursBox.appendChild(bar);
                 }
+                hwrap.appendChild(hoursBox);
+                const labels = el('div', 'insp-hour-labels');
+                ['00', '06', '12', '18', '23'].forEach(t => labels.appendChild(el('span', null, t)));
+                hwrap.appendChild(labels);
+                frag.appendChild(hwrap);
 
-                $('inspector-body').innerHTML = `
-                    <div class="insp-row"><span>Name</span><b>${esc(p.sender_name)}</b></div>
-                    <div class="insp-row"><span>Username</span><b>${p.username && p.username !== 'None' ? '@' + esc(p.username) : '—'}</b></div>
-                    <div class="insp-row"><span>User ID</span><b>${p.user_id}</b></div>
-                    <div class="insp-row"><span>Messages</span><b>${p.total.toLocaleString('en-US')}</b></div>
-                    <div class="insp-row"><span>First seen</span><b>${fmtDate(p.first_seen)}</b></div>
-                    <div class="insp-row"><span>Last seen</span><b>${fmtDate(p.last_seen)}</b></div>
-                    <div class="insp-block">
-                        <h3>Where they post</h3>
-                        ${groups || '<div class="insp-empty">No group activity recorded.</div>'}
-                    </div>
-                    <div class="insp-block">
-                        <h3>Activity by hour · UTC</h3>
-                        <div class="insp-hours">${hours}</div>
-                        <div class="insp-hour-labels"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
-                    </div>
-                    <div class="insp-block">
-                        <h3>Actor profile</h3>
-                        <div id="dossier-box"><div class="insp-empty">Mesajlarından profil çıkarılabilir.</div></div>
-                        <button class="insp-cta" id="dossier-btn" data-uid="${p.user_id}">Profili çıkar</button>
-                    </div>`;
+                const dwrap = el('div', 'insp-block');
+                dwrap.appendChild(el('h3', null, 'Actor profile'));
+                const box = el('div');
+                box.id = 'dossier-box';
+                box.appendChild(el('div', 'insp-empty', 'Mesajlarından profil çıkarılabilir.'));
+                dwrap.appendChild(box);
+                const dossierBtn = el('button', 'insp-cta', 'Profili çıkar');
+                dossierBtn.type = 'button';
+                dossierBtn.id = 'dossier-btn';
+                dossierBtn.dataset.uid = num(p.user_id, '');
+                dwrap.appendChild(dossierBtn);
+                frag.appendChild(dwrap);
+
+                body.replaceChildren(frag);
                 loadDossier(p.user_id);
             } catch (e) {
                 console.error(e);
-                $('inspector-body').innerHTML = '<div class="insp-empty">Profile could not be loaded.</div>';
+                body.replaceChildren(el('div', 'insp-empty', 'Profile could not be loaded.'));
             }
         }
 
@@ -996,10 +1114,57 @@
             el.textContent = text;
         }
 
+        // HTML'e giren her serbest metin buradan gecer. Tirnaklar da kacirilir,
+        // cunku ayni fonksiyon attribute degerlerinde de kullaniliyor.
+        // (Eski surum div.innerHTML ile kaciriyordu; o yol tirnaklari ve
+        //  dolayli olarak attribute baglamini korumuyordu.)
         function esc(s) {
-            const d = document.createElement('div');
-            d.textContent = s || '';
-            return d.innerHTML;
+            return String(s === null || s === undefined ? '' : s)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        // CSS selector icine girecek degerler: sadece [0-9a-zA-Z_-] kalir.
+        function cssSafe(v) {
+            return String(v === null || v === undefined ? '' : v).replace(/[^0-9A-Za-z_-]/g, '');
+        }
+
+        // Sayisal alanlar: sadece sonlu sayi gecer, gerisi yedek degere duser.
+        // innerHTML icine giren id/sayac/sure alanlarinin hepsi buradan gecer.
+        // Bos string '0' sayilmaz, yedek deger doner.
+        function num(v, fallback) {
+            const s = typeof v === 'string' ? v.trim() : v;
+            const n = (s === '' || s === null || s === undefined) ? NaN : Number(s);
+            return Number.isFinite(n) ? String(n) : (fallback === undefined ? '—' : fallback);
+        }
+
+        // LLM ciktisi icin guvenli, cok sinirli bicimlendirici: once metin
+        // parcalanir, sonra sadece **kalin** ve satir sonu uygulanir.
+        // Ham HTML hicbir zaman DOM'a girmez (innerHTML yok).
+        function richEl(text, tag, cls) {
+            const node = document.createElement(tag || 'div');
+            if (cls) node.className = cls;
+            String(text === null || text === undefined ? '' : text).split(/\u000d?\n/).forEach((line, i) => {
+                if (i) node.appendChild(document.createElement('br'));
+                line.split(/(\*\*[^*]+\*\*)/).forEach(part => {
+                    if (!part) return;
+                    const m = /^\*\*([^*]+)\*\*$/.exec(part);
+                    if (m) node.appendChild(el('strong', null, m[1]));
+                    else node.appendChild(document.createTextNode(part));
+                });
+            });
+            return node;
+        }
+
+        // Ayni donusumun string donen surumu; yalnizca HTML'i baska bir
+        // kacirilmis parcanin yanina eklerken kullanilir.
+        function rich(s) {
+            return esc(s)
+                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+                .replace(/\u000d?\n/g, '<br>');
         }
 
         document.addEventListener('keydown', e => {
@@ -1016,7 +1181,9 @@
         $('is_deleted').addEventListener('change', (e) => {
             if(e.target.checked) $('deleted-toggle-label').classList.add('active');
             else $('deleted-toggle-label').classList.remove('active');
-            applyHash();
+            // applyHash() burada URL'deki eski 'd' degerini geri yazip secimi
+            // iptal ediyordu; durumu once yukle, sonra adrese isle.
+            load(1).then(() => writeHash(true));
         });
         
         $('export-btn').addEventListener('click', () => {
@@ -1078,14 +1245,24 @@
                 const avg = d.last_hour / 60;
                 $('rail-avg').textContent = avg ? avg.toFixed(1) : '0.0';
 
-                $('rail-group-chips').innerHTML = (d.groups || []).map(g =>
-                    `<span class="group-chip"><i>${esc(g.name)}</i><b>${g.count}</b></span>`
-                ).join('');
+                // Ray cipleri: grup adlari serbest metin, DOM ile kurulur.
+                const chips = $('rail-group-chips');
+                chips.replaceChildren();
+                (d.groups || []).forEach(g => {
+                    const chip = el('span', 'group-chip');
+                    chip.appendChild(el('i', null, g.name || ''));
+                    chip.appendChild(el('b', null, num(g.count, '0')));
+                    chips.appendChild(chip);
+                });
 
-                $('rail-del-groups').innerHTML = (d.deleted_groups_hour || []).length
-                    ? d.deleted_groups_hour.map(g =>
-                        `<li><i>${esc(g.name)}</i><b>${g.count}</b></li>`).join('')
-                    : '';
+                const delGroups = $('rail-del-groups');
+                delGroups.replaceChildren();
+                (d.deleted_groups_hour || []).forEach(g => {
+                    const li = document.createElement('li');
+                    li.appendChild(el('i', null, g.name || ''));
+                    li.appendChild(el('b', null, num(g.count, '0')));
+                    delGroups.appendChild(li);
+                });
 
                 renderPulse(d.per_minute || []);
                 renderDeletions(d.deleted_per_minute || []);
@@ -1360,12 +1537,15 @@
                 
                 // Silinen mesaj sinyali ise
                 if (msg.type === 'DELETED') {
-                    // Ekranda o mesaji bulup tag ekle
-                    const rows = document.querySelectorAll(`tr[data-msgid="${msg.message_id}"][data-chatid="${msg.chat_id}"]`);
+                    // Ekranda o mesaji bulup tag ekle (secici degerleri kacirilir,
+                    // WS'ten gelen id'ler dogrudan attribute seciciye girmesin)
+                    const sel = `tr[data-msgid="${cssSafe(msg.message_id)}"][data-chatid="${cssSafe(msg.chat_id)}"]`;
+                    const rows = document.querySelectorAll(sel);
                     rows.forEach(r => {
                         const contentTd = r.querySelector('.cell-content');
-                        if (contentTd && !contentTd.innerHTML.includes('tag-del')) {
-                            contentTd.innerHTML = `<span class="tag-del">Deleted</span><br>` + contentTd.innerHTML;
+                        if (contentTd && !contentTd.querySelector('.tag-del')) {
+                            contentTd.insertBefore(document.createElement('br'), contentTd.firstChild);
+                            contentTd.insertBefore(el('span', 'tag-del', 'Deleted'), contentTd.firstChild);
                         }
                     });
                     
@@ -1390,7 +1570,7 @@
                     
                     let match = true;
                     if (d) match = false; // Normal yeni gelen mesajlar is_deleted false oldugu icin Sadece Silinenler seciliyse ekrana dusmesin.
-                    if (q && !msg.content.toLowerCase().includes(q)) match = false;
+                    if (q && !String(msg.content || '').toLowerCase().includes(q)) match = false;
                     if (u && (!msg.username || !msg.username.toLowerCase().includes(u))) match = false;
                     if (g && (!msg.chat_title || !msg.chat_title.toLowerCase().includes(g))) match = false;
                     
@@ -1467,57 +1647,145 @@
 
         function open(flag) { digestPanel.classList.toggle('open', flag); }
         function loading(label) {
-            digestBody.innerHTML = `<div class="digest-spin">${label} — model dilimleri okuyor, 1-2 dakika sürebilir…</div>`;
+            digestBody.replaceChildren(el('div', 'digest-spin',
+                `${label} — model dilimleri okuyor, 1-2 dakika sürebilir…`));
         }
         function fail(msg) {
-            digestBody.innerHTML = `<div class="digest-card"><h3>Hata</h3><div class="digest-row"><div>${msg}</div></div></div>`;
+            const card = el('div', 'digest-card');
+            card.appendChild(el('h3', null, 'Hata'));
+            const row = el('div', 'digest-row');
+            row.appendChild(richEl(msg, 'div'));
+            card.appendChild(row);
+            digestBody.replaceChildren(card);
         }
-        function evLinks(ids) {
-            return (ids || []).slice(0, 4)
-                .map(id => `<a class="ev" data-msg="${id}" title="Mesajı aç">${id}</a>`)
-                .join(' ');
+        // Kanit linki: kimlik sadece sayi ise basilir; metin textContent ile girer.
+        function evLinks(ids, sep) {
+            const frag = document.createDocumentFragment();
+            (ids || []).slice(0, 4).forEach((id, i) => {
+                if (i) frag.appendChild(document.createTextNode(sep || ' '));
+                const safe = num(id, '');
+                const a = document.createElement('a');
+                a.className = 'ev';
+                a.title = 'Mesajı aç';
+                a.textContent = safe || '?';
+                if (safe) a.dataset.msg = safe;
+                frag.appendChild(a);
+            });
+            return frag;
         }
+        // LLM listesi: etiket/ozet richEl ile (once metin, sonra **kalin**),
+        // sayaclar num() ile yazilir.
         function rows(list, labelKey, subKey) {
-            if (!list || !list.length) return '';
-            return list.map(t => {
-                const n = t.senders ?? t.count ?? t.msgs ?? '';
-                return `<div class="digest-row"><span class="digest-num">${n}</span><div>
-                    <b>${t[labelKey] || ''}</b>${t[subKey] ? ` — ${t[subKey]}` : ''}
-                    ${(t.evidence || []).length ? `<span class="digest-ev">${evLinks(t.evidence)}</span>` : ''}</div></div>`;
-            }).join('');
+            if (!list || !list.length) return null;
+            const frag = document.createDocumentFragment();
+            list.forEach(t => {
+                const row = el('div', 'digest-row');
+                row.appendChild(el('span', 'digest-num', num(t.senders ?? t.count ?? t.msgs, '')));
+                const body = el('div');
+                body.appendChild(richEl(t[labelKey] || '', 'b'));
+                if (t[subKey]) {
+                    body.appendChild(document.createTextNode(' — '));
+                    body.appendChild(richEl(t[subKey], 'span'));
+                }
+                if ((t.evidence || []).length) {
+                    const ev = el('span', 'digest-ev');
+                    ev.appendChild(evLinks(t.evidence));
+                    body.appendChild(ev);
+                }
+                row.appendChild(body);
+                frag.appendChild(row);
+            });
+            return frag;
+        }
+        function unansweredRows(list, withEvidence) {
+            if (!list || !list.length) return null;
+            const frag = document.createDocumentFragment();
+            list.forEach(u => {
+                const row = el('div', 'digest-row');
+                const body = el('div');
+                body.appendChild(richEl(u.text || '', 'span'));
+                if (withEvidence && (u.evidence || []).length) {
+                    const ev = el('span', 'digest-ev');
+                    ev.appendChild(evLinks(u.evidence, ' · '));
+                    body.appendChild(ev);
+                }
+                row.appendChild(body);
+                frag.appendChild(row);
+            });
+            return frag;
+        }
+        function noteRows(list) {
+            if (!list || !list.length) return null;
+            const frag = document.createDocumentFragment();
+            list.forEach(n => {
+                const row = el('div', 'digest-row');
+                row.appendChild(richEl(n, 'div'));
+                frag.appendChild(row);
+            });
+            return frag;
+        }
+        function card(title, body) {
+            const c = el('div', 'digest-card');
+            c.appendChild(el('h3', 'sec', title));
+            if (body) c.appendChild(body);
+            return c;
         }
         function evidenceNote(d) {
             if (!d.evidence_total) return '';
-            const bad = d.evidence_total - d.evidence_ok;
-            return ` · kanıt ${d.evidence_ok}/${d.evidence_total}${bad ? ` (${bad} eksik)` : ''}`;
+            const bad = (Number(d.evidence_total) || 0) - (Number(d.evidence_ok) || 0);
+            return ` · kanıt ${num(d.evidence_ok, '0')}/${num(d.evidence_total, '0')}${bad > 0 ? ` (${bad} eksik)` : ''}`;
         }
 
         async function runSegment(hours) {
             document.querySelectorAll('.digest-tab').forEach(b => b.disabled = true);
-            loading(`Son ${hours} saat`);
+            loading(`Son ${num(hours, '?')} saat`);
             const t0 = performance.now();
             try {
-                const r = await fetch(`/api/digest/segment?hours=${hours}`, { method: 'POST' });
+                const r = await fetch(`/api/digest/segment?hours=${encodeURIComponent(hours)}`, { method: 'POST' });
                 const data = await r.json();
                 if (!r.ok) throw new Error(data.detail || 'özet üretilemedi');
                 const secs = ((performance.now() - t0) / 1000).toFixed(0);
-                const okAll = data.items.reduce((a, i) => a + (i.evidence_ok || 0), 0);
-                const totAll = data.items.reduce((a, i) => a + (i.evidence_total || 0), 0);
-                const head = `<div class="digest-meta">${data.segments} dilim · ${data.messages} mesaj · ${data.tokens_in}+${data.tokens_out} token · ${secs}s${money(data.cost)}${totAll ? ` · kanıt ${okAll}/${totAll}` : ''}</div>`;
-                const cards = data.items.map(it => {
+                const items = Array.isArray(data.items) ? data.items : [];
+                const okAll = items.reduce((a, i) => a + (Number(i.evidence_ok) || 0), 0);
+                const totAll = items.reduce((a, i) => a + (Number(i.evidence_total) || 0), 0);
+
+                const frag = document.createDocumentFragment();
+                frag.appendChild(el('div', 'digest-meta',
+                    `${num(data.segments, '0')} dilim · ${num(data.messages, '0')} mesaj`
+                    + ` · ${num(data.tokens_in, '0')}+${num(data.tokens_out, '0')} token · ${secs}s`
+                    + money(Number(data.cost) || 0)
+                    + (totAll ? ` · kanıt ${okAll}/${totAll}` : '')));
+
+                items.forEach(it => {
                     const p = it.payload || {};
-                    const st = (it.window_start || '').slice(11, 16), en = (it.window_end || '').slice(11, 16);
-                    const un = (p.unanswered || []).map(u =>
-                        `<div class="digest-row"><div>${u.text || ''}<span class="digest-ev">${(u.evidence || []).join(' · ')}</span></div></div>`).join('');
-                    return `<div class="digest-card">
-                        <div class="digest-slot"><time>${st}–${en}</time><span>${it.chat_title || ''}</span></div>
-                        ${(p.sectors || []).length ? `<h3>Sektörler</h3>${rows(p.sectors, 'name', 'summary')}` : ''}
-                        <h3 style="margin-top:10px">Konular</h3>${rows(p.topics, 'label', 'summary')}
-                        ${(p.demands || []).length ? `<h3 style="margin-top:10px">Talepler</h3>${rows(p.demands, 'what', '')}` : ''}
-                        ${un ? `<h3 style="margin-top:10px">Cevapsız</h3>${un}` : ''}
-                    </div>`;
-                }).join('');
-                digestBody.innerHTML = head + (cards || '<div class="digest-empty">Bu aralıkta mesaj yok.</div>');
+                    const box = el('div', 'digest-card');
+                    const slot = el('div', 'digest-slot');
+                    slot.appendChild(el('time', null,
+                        `${(it.window_start || '').slice(11, 16)}–${(it.window_end || '').slice(11, 16)}`));
+                    slot.appendChild(el('span', null, it.chat_title || ''));
+                    box.appendChild(slot);
+
+                    if ((p.sectors || []).length) {
+                        box.appendChild(el('h3', 'sec', 'Sektörler'));
+                        box.appendChild(rows(p.sectors, 'name', 'summary'));
+                    }
+                    box.appendChild(el('h3', 'sec', 'Konular'));
+                    const topics = rows(p.topics, 'label', 'summary');
+                    if (topics) box.appendChild(topics);
+                    if ((p.demands || []).length) {
+                        box.appendChild(el('h3', 'sec', 'Talepler'));
+                        box.appendChild(rows(p.demands, 'what', ''));
+                    }
+                    const un = unansweredRows(p.unanswered, true);
+                    if (un) {
+                        box.appendChild(el('h3', 'sec', 'Cevapsız'));
+                        box.appendChild(un);
+                    }
+                    frag.appendChild(box);
+                });
+
+                if (!items.length) frag.appendChild(el('div', 'digest-empty', 'Bu aralıkta mesaj yok.'));
+                digestBody.replaceChildren(frag);
             } catch (e) { fail(e.message); }
             finally { document.querySelectorAll('.digest-tab').forEach(b => b.disabled = false); }
         }
@@ -1530,19 +1798,23 @@
                 const d = await r.json();
                 if (!r.ok) throw new Error(d.detail || 'günlük özet üretilemedi');
                 const p = d.payload || {};
-                const un = (p.unanswered || []).map(u =>
-                    `<div class="digest-row"><div>${u.text || ''}</div></div>`).join('');
-                const notes = (p.notes || []).map(n => `<div class="digest-row"><div>${n}</div></div>`).join('');
-                digestBody.innerHTML = `
-                    <div class="digest-meta">${(d.window_start || '').slice(0, 10)} · ${d.msg_count} mesaj · ${d.tokens_in}+${d.tokens_out} token${money(d.cost)}${evidenceNote(d)}</div>
-                    <div class="digest-headline">${p.headline || ''}</div>
-                    <div class="digest-card"><h3>Sektörler</h3>${rows(p.sectors, 'name', 'summary')}</div>
-                    ${(p.opportunities || []).length ? `<div class="digest-card"><h3>İş fırsatları</h3>${rows(p.opportunities, 'what', 'why')}</div>` : ''}
-                    ${(p.topics || []).length ? `<div class="digest-card"><h3>Öne çıkan konular</h3>${rows(p.topics, 'label', 'summary')}</div>` : ''}
-                    ${(p.demands || []).length ? `<div class="digest-card"><h3>Talepler</h3>${rows(p.demands, 'what', '')}</div>` : ''}
-                    ${(p.actors || []).length ? `<div class="digest-card"><h3>Aktörler</h3>${rows(p.actors, 'name', 'note')}</div>` : ''}
-                    ${un ? `<div class="digest-card"><h3>Cevapsız talepler</h3>${un}</div>` : ''}
-                    ${notes ? `<div class="digest-card"><h3>Notlar</h3>${notes}</div>` : ''}`;
+
+                const frag = document.createDocumentFragment();
+                frag.appendChild(el('div', 'digest-meta',
+                    `${(d.window_start || '').slice(0, 10)} · ${num(d.msg_count, '0')} mesaj`
+                    + ` · ${num(d.tokens_in, '0')}+${num(d.tokens_out, '0')} token`
+                    + money(Number(d.cost) || 0) + evidenceNote(d)));
+                frag.appendChild(richEl(p.headline || '', 'div', 'digest-headline'));
+                frag.appendChild(card('Sektörler', rows(p.sectors, 'name', 'summary')));
+                if ((p.opportunities || []).length) frag.appendChild(card('İş fırsatları', rows(p.opportunities, 'what', 'why')));
+                if ((p.topics || []).length) frag.appendChild(card('Öne çıkan konular', rows(p.topics, 'label', 'summary')));
+                if ((p.demands || []).length) frag.appendChild(card('Talepler', rows(p.demands, 'what', '')));
+                if ((p.actors || []).length) frag.appendChild(card('Aktörler', rows(p.actors, 'name', 'note')));
+                const un = unansweredRows(p.unanswered, false);
+                if (un) frag.appendChild(card('Cevapsız talepler', un));
+                const notes = noteRows(p.notes);
+                if (notes) frag.appendChild(card('Notlar', notes));
+                digestBody.replaceChildren(frag);
             } catch (e) { fail(e.message); }
             finally { document.querySelectorAll('.digest-tab').forEach(b => b.disabled = false); }
         }
@@ -1551,17 +1823,24 @@
             const a = e.target.closest('a.ev');
             if (!a) return;
             e.preventDefault();
-            const id = a.dataset.msg;
-            const r = await fetch(`/api/message/${id}`);
-            const m = await r.json();
-            const box = document.createElement('div');
-            box.className = 'ev-pop';
-            box.innerHTML = r.ok
-                ? `<div class="ev-head">${m.chat_title || ''} · ${new Date(m.timestamp).toLocaleString('tr-TR')}</div>
-                   <div class="ev-sender">${m.sender_name || m.username || m.user_id}${m.username ? ' @' + m.username : ''} · id ${m.user_id}</div>
-                   <div class="ev-body">${(m.content || '').replace(/</g, '&lt;')}</div>
-                   <div class="ev-foot">${m.is_deleted ? 'silinmiş' : 'arşivde'} · mesaj ${m.message_id}</div>`
-                : `<div class="ev-head">Bulunamadı</div><div class="ev-body">Bu kimlik arşivde yok.</div>`;
+            const id = num(a.dataset.msg, '');
+            if (!id) return;
+            const r = await fetch(`/api/message/${encodeURIComponent(id)}`);
+            const m = await r.json().catch(() => ({}));
+            const box = el('div', 'ev-pop');
+            if (r.ok) {
+                // Kanit popup'i: tum alanlar textContent ile, ham HTML yok.
+                box.appendChild(el('div', 'ev-head',
+                    `${m.chat_title || ''} · ${new Date(m.timestamp).toLocaleString('tr-TR')}`));
+                box.appendChild(el('div', 'ev-sender',
+                    `${m.sender_name || m.username || num(m.user_id)}${m.username ? ' @' + m.username : ''} · id ${num(m.user_id)}`));
+                box.appendChild(el('div', 'ev-body', m.content == null ? '' : String(m.content)));
+                box.appendChild(el('div', 'ev-foot',
+                    `${m.is_deleted ? 'silinmiş' : 'arşivde'} · mesaj ${num(m.message_id)}`));
+            } else {
+                box.appendChild(el('div', 'ev-head', 'Bulunamadı'));
+                box.appendChild(el('div', 'ev-body', 'Bu kimlik arşivde yok.'));
+            }
             document.body.appendChild(box);
             setTimeout(() => box.classList.add('show'), 10);
             const close = () => { box.classList.remove('show'); setTimeout(() => box.remove(), 180); };
