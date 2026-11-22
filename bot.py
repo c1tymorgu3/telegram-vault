@@ -25,27 +25,28 @@ import random
 import sys
 import time
 from collections import deque
-from datetime import datetime, timezone
-from urllib.parse import urlparse, unquote
+from datetime import datetime, timedelta, timezone
+from urllib.parse import unquote, urlparse
 
 import httpx
-from sqlalchemy import select, update, func
+from sqlalchemy import and_, func, not_, select, update
+from sqlalchemy.exc import IntegrityError
 from telethon import TelegramClient, events, utils
 from telethon.errors import (
-    AuthKeyError,
     AuthKeyDuplicatedError,
+    AuthKeyError,
     AuthKeyUnregisteredError,
-    SessionPasswordNeededError,
-    PhoneCodeInvalidError,
+    FloodWaitError,
     PhoneCodeExpiredError,
+    PhoneCodeInvalidError,
+    SessionPasswordNeededError,
     UserDeactivatedBanError,
     UserDeactivatedError,
-    FloodWaitError,
 )
 
 import config
-from config import API_ID, API_HASH, PHONE_NUMBER
-from database import SessionLocal, Message, Chat, init_db
+from config import API_HASH, API_ID, PHONE_NUMBER
+from database import Chat, Message, SessionLocal, init_db
 
 # Auth errors that mean "this session will never work again". Fatal, but the
 # answer is never "delete the session and log in again" — see handle_fatal().
@@ -74,6 +75,35 @@ CHAT_TITLE_CACHE = {}
 CHAT_SYNC_LIMIT = 200
 RECENT_KEYS = deque(maxlen=5000)
 RECENT_SET = set()
+
+# --- Silme / poll ayarlari -------------------------------------------------
+BACKFILL_LIMIT = 200
+
+# Sohbet listesi poll'u: her turda [MIN, MAX] araliginda rastgele bir bekleme.
+# Flood gelirse bekleme backoff carpaniyla uzar; backoff'lu bekleme
+# DIALOG_POLL_BACKOFF_MAX'i (300 sn) asmaz (taban aralik ise dogrudan
+# [DIALOG_POLL_MIN, DIALOG_POLL_MAX]'tir, kirpilmaz).
+# DIALOG_POLL_MAX >= DIALOG_POLL_DISABLED ise poll TAMAMEN kapalidir: deger
+# kirpilmaz, gap_watchdog hic uyanmaz.
+DIALOG_POLL_MIN = int(os.getenv("DIALOG_POLL_MIN", "50"))  # saniye
+DIALOG_POLL_MAX = int(os.getenv("DIALOG_POLL_MAX", "60"))  # 9999+ = poll kapali
+DIALOG_POLL_BACKOFF_MAX = 300   # backoff tavanini asan aralik = 300 sn
+DIALOG_POLL_DISABLED = 9999     # "poll kapali" esigi
+# Poll yalnizca en yeni N sohbete bakar: get_dialogs(limit=N) tek bir istek,
+# tam sayfalama degil. Arsivdeki 7 sohbetin hepsi bu pencerede kaliyor; N'den
+# eski bir sohbet sessizlesirse poll onu gormez (config'ten okunmuyor, bilincli).
+DIALOG_POLL_LIMIT = 60
+
+# Toplu silmede tek UPDATE'te islenen ID sayisi: liste parca parca islenir,
+# binlerce ID ayni anda bellekte tutulmaz.
+DELETE_BATCH_SIZE = 100
+# Bir silme olayinda panele canli bildirilen en fazla ID. Ustunu panelin 30
+# sn'lik toplam yenilemesi tamamlar; binlerce HTTP cagrisi yapilmaz.
+DELETE_BROADCAST_LIMIT = 200
+
+# Ertelenmis silmeler (~24 saat / ~7 gun) Telegram'in kendi servis mesaji
+# temizligidir, insan kanit silme degildir. (alt, ust) saniye araliklari.
+DELAYED_DELETE_WINDOWS = ((86280, 86520), (604680, 604920))
 
 
 # --------------------------------------------------------------------------
@@ -283,11 +313,16 @@ async def gap_watchdog(client):
     flood per pass. `get_dialogs(limit=...)` is a single request that returns
     the newest message id per chat; only the chats that moved are backfilled.
     """
+    if dialog_poll_disabled(DIALOG_POLL_MAX):
+        # Belgede yazan "9999 = poll kapali" artik gercekten kapali: eskiden
+        # 300 sn'ye kirpiliyor ve poll 5 dakikada bir calismaya devam ediyordu.
+        logger.info("Dialog poll disabled (DIALOG_POLL_MAX=%s).", DIALOG_POLL_MAX)
+        return
+
     backoff = 1.0
     while True:
-        # Her turda yeni aralik: 50-60 sn. Flood gelirse backoff carpani.
-        await asyncio.sleep(min(random.uniform(DIALOG_POLL_MIN, DIALOG_POLL_MAX) * backoff,
-                                DIALOG_POLL_BACKOFF_MAX))
+        # Her turda yeni aralik: MIN-MAX sn. Flood gelirse backoff carpani.
+        await asyncio.sleep(poll_interval(backoff=backoff))
         try:
             dialogs = await client.get_dialogs(limit=DIALOG_POLL_LIMIT)
         except FloodWaitError as exc:
@@ -354,17 +389,98 @@ def handle_fatal(exc, reason):
 
 
 # --------------------------------------------------------------------------
+# Karar yardimcilari (agdan ve DB'den bagimsiz; tests/test_bot.py bunlari
+# dogrudan cagirir, bu yuzden imzalarini degistirirken testi de guncelle)
+# --------------------------------------------------------------------------
+def archivable_event(is_private, content):
+    """Ozel sohbet ve metinsiz mesaj arsive girmez (NewMessage ile ayni kural)."""
+    return (not is_private) and bool(content)
+
+
+def chunked(items, size=DELETE_BATCH_SIZE):
+    """ID listesini sabit boyutlu parcalara boler.
+
+    Parcalar tek tek uretilir: 50 bin ID'lik bir ADMIN_CLEAR olayinda liste
+    bastan sona bellekte kopyalanmaz.
+    """
+    size = max(1, int(size))
+    for start in range(0, len(items), size):
+        yield items[start:start + size]
+
+
+def deletion_targets(chat_id, ids):
+    """Islenebilir silinen ID'ler; chat_id yoksa bos liste.
+
+    chat_id olmadan esleme yapmak, mesaj numarasini TUM sohbetlerde arayip
+    ayni numaraya sahip baska bir sohbetin satirini "silindi" isaretliyordu.
+    Bu yuzden chat_id yoksa hicbir ID islenmez, sadece uyari yazilir.
+    """
+    if not chat_id:
+        return []
+    return [int(mid) for mid in ids if mid]
+
+
+def is_delayed_cleanup(age_seconds):
+    """Ertelenmis Telegram temizligi mi (insan silmesi degil)?"""
+    return any(low < age_seconds < high for low, high in DELAYED_DELETE_WINDOWS)
+
+
+def delayed_cleanup_bounds(now):
+    """Ayni pencerelerin SQL karsiligi: timestamp (now-ust, now-alt) icinde.
+
+    `is_delayed_cleanup` satir satir cagrilamadigi icin (toplu UPDATE) ayni
+    kural burada zaman damgasi siniri olarak uretilir.
+    """
+    return [(now - timedelta(seconds=high), now - timedelta(seconds=low))
+            for low, high in DELAYED_DELETE_WINDOWS]
+
+
+def dialog_poll_disabled(poll_max):
+    """9999 ve uzeri deger "poll kapali" demektir (300 sn'ye kirpilmaz)."""
+    return int(poll_max) >= DIALOG_POLL_DISABLED
+
+
+def poll_interval(low=DIALOG_POLL_MIN, high=DIALOG_POLL_MAX, backoff=1.0):
+    """Bir sonraki poll'a kadar beklenecek sure.
+
+    Ters verilmis MIN/MAX cokmesin diye aralik normalize edilir; sonuc
+    DIALOG_POLL_BACKOFF_MAX'i asmaz.
+    """
+    if low > high:
+        low, high = high, low
+    return min(random.uniform(low, high) * backoff, DIALOG_POLL_BACKOFF_MAX)
+
+
+async def insert_message(session, **fields):
+    """Mesaji yaz; (chat_id, message_id) zaten varsa sessizce gec.
+
+    Backfill ile canli dinleyici ayni mesaji yazabiliyor ve DB'de unique
+    kisit var. Cakisma SAVEPOINT icinde yakalaniyor: disaridaki islem
+    (chat guncellemesi) ve oturum kullanilabilir kalir, Whole-commit
+    patlamaz. Donus: True yazildi, False cakisti.
+    """
+    try:
+        async with session.begin_nested():
+            session.add(Message(**fields))
+            await session.flush()
+    except IntegrityError:
+        logger.debug(
+            "Duplicate archive row chat=%s message=%s ignored.",
+            fields.get("chat_id"), fields.get("message_id"),
+        )
+        return False
+    return True
+
+
+# --------------------------------------------------------------------------
 # Handlers
 # --------------------------------------------------------------------------
 def register(client, http):
     @client.on(events.NewMessage())
     async def handler(event):
         # Private chats stay out of the archive on purpose.
-        if event.is_private:
-            return
-
         msg = event.message
-        if not msg or not msg.message:
+        if not archivable_event(event.is_private, msg.message if msg else None):
             return
 
         if not remember((event.chat_id, msg.id)):
@@ -376,7 +492,7 @@ def register(client, http):
             # and that measured 5-9s per message. Slow handlers are also why the
             # server stopped pushing to this session. Titles come from the
             # get_dialogs cache, names from SENDER_CACHE, filled lazily.
-            _t0 = _t1 = _t2 = time.perf_counter()
+            _t0 = time.perf_counter()
             chat_id = event.chat_id
             chat_title = CHAT_TITLE_CACHE.get(chat_id) or _chat_title_hint(msg, chat_id)
 
@@ -388,11 +504,18 @@ def register(client, http):
             _lag = (datetime.now(timezone.utc).replace(tzinfo=None) - timestamp).total_seconds()
             if _lag > 2:
                 logger.warning("Update lag %.1fs (%s)", _lag, chat_title[:32])
+            # "chat" asamasi burada biter: her asama kendi perf_counter()
+            # cagrisini alir; paylasilan tek deger "chat" ve "sender"
+            # surelerini her zaman 0 gosteriyordu.
+            _t1 = time.perf_counter()
+
             user_id = event.sender_id
             username, sender_name = sender_identity(msg, user_id)
+            _t2 = time.perf_counter()
 
             async with SessionLocal() as session:
-                session.add(Message(
+                stored = await insert_message(
+                    session,
                     message_id=msg.id,
                     chat_id=chat_id,
                     chat_title=chat_title[:255] if chat_title else None,
@@ -401,7 +524,7 @@ def register(client, http):
                     sender_name=sender_name[:255],
                     content=content,
                     timestamp=timestamp,
-                ))
+                )
                 # The chat row may exist from the startup sync; if it does not,
                 # this update is a no-op and the next sync creates it.
                 await session.execute(
@@ -415,6 +538,11 @@ def register(client, http):
                 await session.commit()
             _t3 = time.perf_counter()
 
+            if not stored:
+                # Backfill bu mesaji zaten yazdi (unique cakisma): panele
+                # ikinci kez canli bildirim gitmesin.
+                return
+
             try:
                 await http.post(config.BROADCAST_URL, json={
                     "chat_title": chat_title,
@@ -425,8 +553,9 @@ def register(client, http):
                     "content": content,
                     "timestamp": timestamp.isoformat(),
                 }, timeout=2.0)
-            except Exception:
-                pass
+            except httpx.HTTPError as exc:
+                # Panel kapali olabilir; mesaj DB'de zaten duruyor.
+                logger.debug("Broadcast failed: %s", exc)
             _t4 = time.perf_counter()
 
             _parts = {
@@ -445,50 +574,126 @@ def register(client, http):
         except Exception as exc:
             logger.error("Error: %s", exc)
 
-    @client.on(events.MessageDeleted())
-    async def delete_handler(event):
-        if not event.deleted_ids:
+    @client.on(events.MessageEdited())
+    async def edit_handler(event):
+        """Duzenlenen mesajin yeni icerigini arsive yazar.
+
+        Satir ayni kalir: content yeni metinle degisir, edited_at naive UTC
+        "simdi" olur. Eski icerik log'a YAZILMAZ (arsivde de tutulmaz).
+        Metni bosaltan duzenleme arsiv satirini silmez, sadece atlanir.
+        """
+        msg = event.message
+        if not archivable_event(event.is_private, msg.message if msg else None):
+            if msg is not None and not event.is_private:
+                logger.debug("Edited message %s in chat %s has no text, kept as-is.",
+                             msg.id, event.chat_id)
             return
 
-        # Bulk deletions are usually admin purges or channel wipes, not intel.
-        if len(event.deleted_ids) > 5:
+        chat_id = event.chat_id
+        if not chat_id:
+            logger.warning("Edited event without chat_id, id=%s skipped.", msg.id)
             return
 
+        edited_at = datetime.now(timezone.utc).replace(tzinfo=None)
         try:
             async with SessionLocal() as session:
-                for msg_id in event.deleted_ids:
-                    query = select(Message).where(Message.message_id == msg_id)
-                    if event.chat_id:
-                        query = query.where(Message.chat_id == event.chat_id)
+                result = await session.execute(
+                    update(Message)
+                    .where(Message.chat_id == chat_id, Message.message_id == msg.id)
+                    .values(content=msg.message, edited_at=edited_at)
+                )
+                await session.commit()
 
-                    result = await session.execute(query)
-                    msg = result.scalars().first()
-                    if not msg:
+            rows = result.rowcount or 0
+            if rows:
+                logger.info("Edited message %s in chat %s: content replaced (%s row).",
+                            msg.id, chat_id, rows)
+            else:
+                # Bot kapaliyken duzenlenmis olabilir; satir yoksa yeni kayit
+                # acmak gecmisi carpitir, sadece debug'a dusuyoruz.
+                logger.debug("Edited message %s in chat %s not in archive.", msg.id, chat_id)
+        except Exception as exc:
+            logger.error("Edit update error: %s", exc)
+
+    @client.on(events.MessageDeleted())
+    async def delete_handler(event):
+        ids = list(event.deleted_ids or [])
+        if not ids:
+            return
+
+        chat_id = event.chat_id
+        targets = deletion_targets(chat_id, ids)
+        if not targets:
+            # Eskiden chat_id yokken ID'ler TUM tabloda araniyor ve ayni
+            # numaraya sahip baska bir sohbetin satiri silinmis isaretleniyordu.
+            logger.warning("Deletion event without chat_id: %s id(s) skipped.", len(ids))
+            return
+
+        # Toplu silmeler (admin purge / kanal temizligi) artik atlanmiyor:
+        # ID'ler DELETE_BATCH_SIZE'lik parcalar halinde tek UPDATE ile isleniyor.
+        if len(targets) > DELETE_BATCH_SIZE:
+            logger.info("Bulk deletion: %s id(s) in chat %s, %s-sized batches.",
+                        len(targets), chat_id, DELETE_BATCH_SIZE)
+
+        bounds = delayed_cleanup_bounds(datetime.now(timezone.utc).replace(tzinfo=None))
+        # Ertelenmis temizlik penceresine (~24h / ~7d) dusen satirlar kurali:
+        # eski kod bunu satir satir uyguluyordu, toplu UPDATE'te ayni kural
+        # zaman damgasi kosulu olarak sorguya giriyor.
+        not_delayed = [
+            not_(and_(Message.timestamp > low, Message.timestamp < high))
+            for low, high in bounds
+        ]
+        marked_ids = []
+        try:
+            for chunk in chunked(targets):
+                async with SessionLocal() as session:
+                    hits = (await session.execute(
+                        select(Message.message_id).where(
+                            Message.chat_id == chat_id,
+                            Message.message_id.in_(chunk),
+                            Message.is_deleted.is_(False),
+                            *not_delayed,
+                        )
+                    )).scalars().all()
+                    if not hits:
                         continue
-
-                    # Delayed deletions (~24h / ~7d) are Telegram-side cleanup
-                    # of service messages, not a human removing evidence.
-                    age = (
-                        datetime.now(timezone.utc).replace(tzinfo=None) - msg.timestamp
-                    ).total_seconds()
-                    if (86280 < age < 86520) or (604680 < age < 604920):
-                        continue
-
-                    msg.is_deleted = True
+                    await session.execute(
+                        update(Message)
+                        .where(
+                            Message.chat_id == chat_id,
+                            Message.message_id.in_(hits),
+                            Message.is_deleted.is_(False),
+                        )
+                        .values(is_deleted=True)
+                    )
                     await session.commit()
+                marked_ids.extend(hits)
 
-                    try:
-                        await http.post(config.BROADCAST_URL, json={
-                            "type": "DELETED",
-                            "message_id": msg_id,
-                            "chat_id": msg.chat_id,
-                        }, timeout=2.0)
-                    except Exception:
-                        pass
+            for msg_id in marked_ids[:DELETE_BROADCAST_LIMIT]:
+                try:
+                    await http.post(config.BROADCAST_URL, json={
+                        "type": "DELETED",
+                        "message_id": msg_id,
+                        "chat_id": chat_id,
+                    }, timeout=2.0)
+                except httpx.HTTPError as exc:
+                    # Panel kapaliysa silme kaydi DB'de zaten duruyor.
+                    logger.debug("Delete broadcast failed: %s", exc)
+
+            if marked_ids:
+                # Panelin "silinenler" sayaci bu satirla dogrulanir: buyuk bir
+                # temizlikte kac ID'nin gercekten isaretlendigi log'dan gorunur.
+                logger.info("Marked %s message(s) deleted in chat %s%s",
+                            len(marked_ids), chat_id,
+                            "" if len(marked_ids) <= DELETE_BROADCAST_LIMIT
+                            else " (%s not broadcast live)"
+                            % (len(marked_ids) - DELETE_BROADCAST_LIMIT))
+            else:
+                logger.debug("Deletion event in chat %s matched no archived row.", chat_id)
         except Exception as exc:
             logger.error("Deletion log error: %s", exc)
 
-    return handler, delete_handler
+    return handler, edit_handler, delete_handler
 
 
 # --------------------------------------------------------------------------
@@ -560,13 +765,6 @@ async def warm_entity_cache(client):
     logger.info("Chat list synced: %s dialogs recorded.", saved)
 
 
-BACKFILL_LIMIT = 200
-DIALOG_POLL_MIN = int(os.getenv("DIALOG_POLL_MIN", "50"))  # saniye; rastgele
-DIALOG_POLL_MAX = int(os.getenv("DIALOG_POLL_MAX", "60"))  # 9999 = poll kapali
-DIALOG_POLL_BACKOFF_MAX = 300
-DIALOG_POLL_LIMIT = 60   # en yeni 60 sohbet; arsivdeki 7 sohbetin hepsi burada
-
-
 async def backfill_gap(client, only=None):
     """Fetch what arrived while the process was down.
 
@@ -618,16 +816,16 @@ async def backfill_gap(client, only=None):
                     if not msg.message:
                         continue
                     sender = msg.sender
-                    batch.append(Message(
-                        message_id=msg.id,
-                        chat_id=chat_id,
-                        chat_title=(title or f"Chat {chat_id}")[:255],
-                        user_id=msg.sender_id,
-                        username=getattr(sender, "username", None),
-                        sender_name=display_name(sender)[:255],
-                        content=msg.message,
-                        timestamp=msg.date.astimezone(timezone.utc).replace(tzinfo=None),
-                    ))
+                    batch.append({
+                        "message_id": msg.id,
+                        "chat_id": chat_id,
+                        "chat_title": (title or f"Chat {chat_id}")[:255],
+                        "user_id": msg.sender_id,
+                        "username": getattr(sender, "username", None),
+                        "sender_name": display_name(sender)[:255],
+                        "content": msg.message,
+                        "timestamp": msg.date.astimezone(timezone.utc).replace(tzinfo=None),
+                    })
                 chunk.extend(batch)
                 # Unlimited depth on purpose: the archive must not have holes,
                 # so keep paging until the chat is caught up. The short pause is
@@ -643,10 +841,18 @@ async def backfill_gap(client, only=None):
             continue
 
         if chunk:
+            written = 0
             async with SessionLocal() as session:
-                session.add_all(chunk)
+                # Satir satir: canli dinleyici ayni mesaji bu arada yazmissa
+                # unique kisit cakismasi tek satiri atlar, chunk'i patlatmaz.
+                for row in chunk:
+                    if await insert_message(session, **row):
+                        written += 1
                 await session.commit()
-            filled += len(chunk)
+            if written < len(chunk):
+                logger.debug("gap: %s/%s rows already archived (chat=%s)",
+                             len(chunk) - written, len(chunk), chat_id)
+            filled += written
 
     if filled:
         logger.info("Backfilled %s message(s) missed while offline.", filled)
