@@ -6,20 +6,23 @@ gercekci gorunen test verisi yazar; .session dosyasi yok, bot calismaz.
 
 import random
 import sqlite3
-from datetime import datetime, timedelta
+import zlib
+from datetime import UTC, datetime, timedelta
 
+# Kurgusal demo sohbetleri: gercek grup/kanal adi ve chat_id icermez, cunku
+# bu dosya public repoda duruyor. ID'ler 1000000000001 araligindan uydurma.
 CHATS = [
-    ("MSwap • Ticaret", -1004384814100, "group", 2541),
-    ("SPYHACKERZ CHAT & Ticaret ~ SociaL Media", -1002220378800, "group", 5528),
-    ("SPYHACKERZ OLD GROUP 7/24", -1003229781784, "group", 11787),
-    ("Kripto Sinyal VIP", -1003111222333, "group", 1893),
-    ("MSwap Teminat Duyuru", -1003438484590, "channel", 3354),
-    ("MSwap • Login", -1003553659114, "channel", 3445),
-    ("Free Unity Assets", -1002062286339, "channel", 498),
+    ("Demo Grup 1", 1000000000001, "group", 2541),
+    ("Demo Grup 2", 1000000000002, "group", 5528),
+    ("Demo Grup 3", 1000000000003, "group", 11787),
+    ("Demo Grup 4", 1000000000004, "group", 1893),
+    ("Demo Kanal 1", 1000000000005, "channel", 3354),
+    ("Demo Kanal 2", 1000000000006, "channel", 3445),
+    ("Demo Kanal 3", 1000000000007, "channel", 498),
 ]
 
 SENDERS = [
-    ("Layn", "layn_x"), ("Mehmet A.", "mehmet_a"), ("Hasan T.", "hasant"),
+    ("Demo Kullanici", "demo_user"), ("Mehmet A.", "mehmet_a"), ("Hasan T.", "hasant"),
     ("Elif D.", "elifd"), ("Kerem Yildiz", "keremy"), ("Group Help", None),
     ("Baran", "baran35"), ("Selin", "selin_k"), ("Emre", "emredev"),
     ("Tolga", "tolga_tt"), ("Deniz", "denizfx"), ("Zeynep", "zeynep42"),
@@ -58,13 +61,32 @@ LINES = [
 ]
 
 
+TS_FMT = "%Y-%m-%d %H:%M:%S.%f"
+
+
+def _has_table(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        "select 1 from sqlite_master where type='table' and name=?", (name,)
+    ).fetchone()
+    return row is not None
+
+
 def main():
     conn = sqlite3.connect("telegramlogs.db")
     conn.execute("delete from messages")
     conn.execute("delete from chats")
+    # Mesajlar silinince profiller ve brifler yetim kaliyor; onlari da temizle
+    # (tablo yoksa eski bir DB'de betik patlamasin).
+    if _has_table(conn, "profiles"):
+        conn.execute("delete from profiles")
+    if _has_table(conn, "digests"):
+        conn.execute("delete from digests")
     conn.commit()
 
-    now = datetime.utcnow()
+    # DB naive UTC tutuyor (bot.py ile ayni bicim). sqlite3'un datetime adaptoru
+    # Python 3.12'de deprecated; degerleri metin olarak yaziyoruz.
+    now = datetime.now(UTC).replace(tzinfo=None)
+    now_s = now.strftime(TS_FMT)
     start = now - timedelta(days=60)
     rows = []
     for chat_title, chat_id, _, _ in CHATS:
@@ -76,11 +98,13 @@ def main():
                 break
             name, username = random.choice(SENDERS)
             # Ayni kisi her mesajda ayni user_id: profil paneli anlamli olsun.
-            user_id = 100000000 + (abs(hash(name)) % 900000000)
+            # crc32 deterministik; hash() ise PYTHONHASHSEED yuzunden her
+            # calistirmada farkli deger verir (ayni kisi her seferinde baska ID).
+            user_id = 100000000 + (zlib.crc32(name.encode("utf-8")) % 900000000)
             rows.append((
                 random.randint(10**5, 10**7), chat_id, chat_title,
                 user_id, username, name,
-                random.choice(LINES), chat_start,
+                random.choice(LINES), chat_start.strftime(TS_FMT),
                 1 if random.random() < 0.18 else 0,
             ))
 
@@ -96,7 +120,7 @@ def main():
            (chat_id, title, username, chat_type, member_count, last_message_at, synced_at)
            values (?,?,?,?,?,?,?)""",
         [(cid, title, None, ctype, members,
-          max((r[7] for r in rows if r[1] == cid), default=None), now)
+          max((r[7] for r in rows if r[1] == cid), default=None), now_s)
          for title, cid, ctype, members in CHATS],
     )
     conn.commit()
