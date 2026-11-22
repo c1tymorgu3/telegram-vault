@@ -1,11 +1,12 @@
 # Alt sinirlar guvenlik advisory'lerini kapatacak sekilde yukseltildi.
 # Ust sinir yok (fastapi disinda): boylece pip her kurulumda yamali surumu alir.
 Telethon>=1.46
-SQLAlchemy>=2.0.36
-fastapi>=0.115,<1.0
-# starlette dogrudan import ediliyor (SessionMiddleware) + 0.47.2 oncesi
-# surumlerde multipart dosya yazimi advisory'si var.
-starlette>=0.47.2,<1.0
+SQLAlchemy[asyncio]>=2.0.36
+fastapi>=0.165,<2.0
+# starlette dogrudan import ediliyor (SessionMiddleware). 0.52 ve altinda
+# PYSEC-2026-248/249/2280/2281/161 advisory'leri var; duzeltmeler 1.3.1'de.
+# fastapi 0.165 zaten starlette>=1.6 istiyor, alt sinir ondan geliyor.
+starlette>=1.6.0,<2.0
 uvicorn>=0.30.0
 python-dotenv>=1.1.0
 jinja2>=3.1.6
