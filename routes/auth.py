@@ -1,12 +1,14 @@
-from fastapi import APIRouter, Request, Form, Depends
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
-from fastapi.templating import Jinja2Templates
-from sqlalchemy.ext.asyncio import AsyncSession
-from collections import defaultdict
-from datetime import datetime, timezone, timedelta
 import hashlib
-import httpx
+import hmac
 import time
+from collections import defaultdict
+from datetime import UTC, datetime, timedelta
+
+import httpx
+from fastapi import APIRouter, Form, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
+
 import config
 from database import SessionLocal
 
@@ -18,19 +20,45 @@ audit_log = []
 RATE_LIMIT_MAX = 5
 RATE_LIMIT_WINDOW = 900
 AUDIT_MAX = 500
+# Sozluk IP basina buyuyordu: hem zaman asimi hem de ust sinir gerekli.
+LOGIN_ATTEMPTS_MAX_IPS = 5000
 
 
 def is_authenticated(request: Request) -> bool:
     return request.session.get("authenticated", False)
 
 
+def prune_login_attempts(now: float | None = None):
+    """Eski denemeleri dusur: pencere disi kayitlar silinir, sozluk boyutu sinirlanir."""
+    if now is None:
+        now = time.time()
+    for ip in list(login_attempts.keys()):
+        fresh = [t for t in login_attempts[ip] if now - t < RATE_LIMIT_WINDOW]
+        if fresh:
+            login_attempts[ip] = fresh
+        else:
+            login_attempts.pop(ip, None)
+
+    # Ust sinir asilirsa en eski son denemeye sahip IP'ler atilir.
+    if len(login_attempts) > LOGIN_ATTEMPTS_MAX_IPS:
+        ordered = sorted(
+            login_attempts.items(),
+            key=lambda kv: max(kv[1]) if kv[1] else 0,
+        )
+        excess = len(login_attempts) - LOGIN_ATTEMPTS_MAX_IPS
+        for ip, _ in ordered[:excess]:
+            login_attempts.pop(ip, None)
+
+
 def is_rate_limited(ip: str) -> bool:
     now = time.time()
+    prune_login_attempts(now)
     login_attempts[ip] = [t for t in login_attempts[ip] if now - t < RATE_LIMIT_WINDOW]
     return len(login_attempts[ip]) >= RATE_LIMIT_MAX
 
 
 def record_attempt(ip: str):
+    prune_login_attempts()
     login_attempts[ip].append(time.time())
 
 
@@ -51,7 +79,7 @@ def password_fingerprint(value: str) -> str:
 def log_auth_event(ip: str, user_agent: str, attempt, success: bool, reason: str = ""):
     ip_hash = hashlib.sha256(ip.encode()).hexdigest()[:12]
     audit_log.insert(0, {
-        "time": (datetime.now(timezone.utc) + timedelta(hours=3)).isoformat(),
+        "time": (datetime.now(UTC) + timedelta(hours=3)).isoformat(),
         "ip": ip,
         "ip_hash": ip_hash,
         "user_agent": (user_agent or "Unknown")[:200],
@@ -100,7 +128,7 @@ async def login_submit(request: Request, password: str = Form(...)):
     ua = request.headers.get("user-agent", "Unknown")
 
     if is_rate_limited(client_ip):
-        log_auth_event(client_ip, ua, password, False, "Rate limited")
+        log_auth_event(client_ip, ua, "***", False, "Rate limited")
         return templates.TemplateResponse(
             request=request, name="login.html", context={
                 "error": "Too many failed attempts. Please wait 15 minutes.",
@@ -109,20 +137,24 @@ async def login_submit(request: Request, password: str = Form(...)):
         )
 
     form_data = await request.form()
-    hcaptcha_token = form_data.get("h-captcha-response", "")
+    raw_token = form_data.get("h-captcha-response", "")
+    # Form alani dosya olarak da gonderilebilir; yalnizca metin kabul edilir.
+    hcaptcha_token = raw_token if isinstance(raw_token, str) else ""
 
-    if config.HCAPTCHA_SECRET_KEY:
-        if not await verify_hcaptcha(hcaptcha_token):
-            record_attempt(client_ip)
-            log_auth_event(client_ip, ua, password, False, "Captcha failed")
-            return templates.TemplateResponse(
-                request=request, name="login.html", context={
-                    "error": "Captcha verification failed.",
-                    "hcaptcha_site_key": config.HCAPTCHA_SITE_KEY
-                }, status_code=403
-            )
+    if config.HCAPTCHA_SECRET_KEY and not await verify_hcaptcha(hcaptcha_token):
+        record_attempt(client_ip)
+        log_auth_event(client_ip, ua, "***", False, "Captcha failed")
+        return templates.TemplateResponse(
+            request=request, name="login.html", context={
+                "error": "Captcha verification failed.",
+                "hcaptcha_site_key": config.HCAPTCHA_SITE_KEY
+            }, status_code=403
+        )
 
-    if password == config.DASHBOARD_PASSWORD:
+    # Sabit zamanli karsilastirma: '==' cevap suresinden sifre sizdirir.
+    if hmac.compare_digest(
+        password.encode("utf-8"), config.DASHBOARD_PASSWORD.encode("utf-8")
+    ):
         request.session["authenticated"] = True
         request.session["login_time"] = datetime.now().isoformat()
         request.session["ip"] = client_ip
@@ -131,7 +163,8 @@ async def login_submit(request: Request, password: str = Form(...)):
         return RedirectResponse(url="/", status_code=302)
     else:
         record_attempt(client_ip)
-        log_auth_event(client_ip, ua, password, False, "Invalid password")
+        # Sifre denemesi log'a yazilmaz (security.log'da duz metin sifre kaliyordu).
+        log_auth_event(client_ip, ua, "***", False, "Invalid password")
         return templates.TemplateResponse(
             request=request, name="login.html", context={
                 "error": "Login failed. Please check your credentials.",

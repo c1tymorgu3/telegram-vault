@@ -1,6 +1,5 @@
 """Aktör profili uçnoktaları: istek üzerine LLM profili, kayıtlı profil, mesaj tekili."""
 
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
@@ -19,20 +18,28 @@ router = APIRouter()
 async def get_message(
     message_id: int,
     request: Request,
+    chat_id: int | None = Query(None, description="Sohbet kimliği; verilirse tam eşleşme"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Kanıt kimliğine tıklanınca tek mesajı döner."""
+    """Kanıt kimliğine tıklanınca tek mesajı döner.
+
+    Telegram'da message_id sohbet başına sayılır: chat_id verilmezse aynı id
+    başka sohbetlerde de bulunabilir, yanıt bunu ambiguous ile bildirir.
+    """
     if not is_authenticated(request):
         return JSONResponse(status_code=401, content={"detail": "Yetkisiz"})
 
+    stmt = select(Message).where(Message.message_id == message_id)
+    if chat_id is not None:
+        # (chat_id, message_id) tam eşleşmesi: yanlış sohbetin mesajı dönmez.
+        stmt = stmt.where(Message.chat_id == chat_id)
     row = (await db.execute(
-        select(Message).where(Message.message_id == message_id)
-        .order_by(Message.timestamp.desc()).limit(1)
+        stmt.order_by(Message.timestamp.desc()).limit(1)
     )).scalars().first()
     if row is None:
         return JSONResponse(status_code=404, content={"detail": "Mesaj arsivde yok"})
 
-    return {
+    payload = {
         "message_id": row.message_id,
         "chat_id": row.chat_id,
         "chat_title": row.chat_title,
@@ -43,6 +50,11 @@ async def get_message(
         "timestamp": row.timestamp.isoformat() + "Z",
         "is_deleted": row.is_deleted,
     }
+    if chat_id is None:
+        # Geriye uyumlu davranış korunuyor, ancak belirsizlik açıkça işaretlenir.
+        payload["ambiguous"] = True
+        payload["note"] = "chat_id belirtilmedi, birden fazla sohbette eşleşme olabilir"
+    return payload
 
 
 @router.get("/api/profile/{user_id}/dossier")
