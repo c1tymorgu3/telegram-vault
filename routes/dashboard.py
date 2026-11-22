@@ -49,7 +49,9 @@ async def list_chats(request: Request, db: AsyncSession = Depends(get_db)):
             func.count(Message.id).label("messages"),
         )
         .outerjoin(Message, Message.chat_id == Chat.chat_id)
-        .group_by(Chat.chat_id)
+        # PostgreSQL: secilen tum Chat kolonlari GROUP BY'da ya da PK uzerinden
+        # fonksiyonel bagimli olmali. Chat.id PK'si bunu karsilar.
+        .group_by(Chat.id)
         .order_by(desc(func.coalesce(Chat.last_message_at, datetime(1970, 1, 1))))
         .limit(500)
     )
