@@ -38,6 +38,28 @@ UNIQUE_INDEX = ("CREATE UNIQUE INDEX IF NOT EXISTS uq_messages_chat_message "
                 "ON messages (chat_id, message_id)")
 EDITED_COLUMN_PG = "ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMP"
 EDITED_COLUMN = "ALTER TABLE messages ADD COLUMN edited_at TIMESTAMP"
+# Dupe temizliginden ONCE bilgi birlestir: bir kopyada duzenlenmis metin, digerinde
+# is_deleted=True olabiliyor. Korunan satir (en kucuk id) en yeni yazimi ve bayraklari alir.
+MERGE_DUPES_PG = (
+    "UPDATE messages k SET content = d.content, "
+    "username = COALESCE(d.username, k.username), "
+    "sender_name = COALESCE(d.sender_name, k.sender_name), "
+    "is_deleted = (k.is_deleted OR d.is_deleted) "
+    "FROM (SELECT DISTINCT ON (chat_id, message_id) chat_id, message_id, content, "
+    "      username, sender_name, is_deleted FROM messages "
+    "      ORDER BY chat_id, message_id, id DESC) d "
+    "WHERE k.id = (SELECT MIN(m2.id) FROM messages m2 "
+    "              WHERE m2.chat_id = k.chat_id AND m2.message_id = k.message_id) "
+    "  AND k.chat_id = d.chat_id AND k.message_id = d.message_id"
+)
+MERGE_DUPES_SQLITE = (
+    "UPDATE messages SET "
+    "  content = (SELECT m2.content FROM messages m2 WHERE m2.chat_id = messages.chat_id "
+    "             AND m2.message_id = messages.message_id ORDER BY m2.id DESC LIMIT 1), "
+    "  is_deleted = (SELECT MAX(m2.is_deleted) FROM messages m2 "
+    "                WHERE m2.chat_id = messages.chat_id AND m2.message_id = messages.message_id) "
+    "WHERE id IN (SELECT MIN(id) FROM messages GROUP BY chat_id, message_id HAVING COUNT(*) > 1)"
+)
 
 
 async def _has_column(conn, table: str, column: str, dialect: str) -> bool:
@@ -80,6 +102,8 @@ async def main(dry_run: bool = False) -> None:
 
         dupes = await _count_dupes(conn)
         print(f"Cift mesaj satiri (silinecek): {dupes}")
+        steps.append(("messages dupe birlestirme",
+                      MERGE_DUPES_SQLITE if dialect == "sqlite" else MERGE_DUPES_PG))
         steps.append(("messages dupe temizligi",
                       DEDUPE_SQLITE if dialect == "sqlite" else DEDUPE_PG))
         steps.append(("uq_messages_chat_message", UNIQUE_INDEX))
