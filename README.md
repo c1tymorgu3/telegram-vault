@@ -5,11 +5,12 @@
 
   **LLM-assisted Telegram OSINT tool · by c1tymorgu3**
 
+  [![CI](https://github.com/c1tymorgu3/telegram-vault/actions/workflows/ci.yml/badge.svg)](https://github.com/c1tymorgu3/telegram-vault/actions/workflows/ci.yml)
+  [![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
   ![Python](https://img.shields.io/badge/Python-3.12-blue?style=flat-square&logo=python)
-  ![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688?style=flat-square&logo=fastapi)
+  ![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688?style=flat-square&logo=fastapi)
   ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Async-336791?style=flat-square&logo=postgresql)
-  ![Telethon](https://img.shields.io/badge/Telethon-1.36.0-2CA5E0?style=flat-square&logo=telegram)
-  ![Status](https://img.shields.io/badge/Status-Active-success?style=flat-square)
+  ![Telethon](https://img.shields.io/badge/Telethon-1.46%2B-2CA5E0?style=flat-square&logo=telegram)
 
   *Reads every message in your chats, keeps it in a searchable archive, and turns it into briefs where every claim carries its message id.*
 </div>
@@ -60,8 +61,8 @@ Velocity, active senders, deletion rate.
 
 ## Installation
 
-Use Python 3.12, not 3.13 or 3.14. The pinned stack (`pydantic-core`, `asyncpg`)
-has no wheels there and the build fails without a C toolchain.
+Use Python 3.12, not 3.13 or 3.14. `pydantic-core` and `asyncpg` have no wheels
+there and the build fails without a C toolchain.
 
 ```bat
 py -3.12 -m venv .venv
@@ -73,13 +74,17 @@ For a local run, point the database at SQLite and turn off HTTPS-only cookies:
 
 ```env
 DATABASE_URL=sqlite+aiosqlite:///./telegramlogs.db
-DASHBOARD_PASSWORD=pick-something
-SESSION_SECRET=paste-a-random-32-char-string
+DASHBOARD_PASSWORD=pick-something-long
+SESSION_SECRET=replace-with-32-random-characters
 SESSION_HTTPS_ONLY=0
 ```
 
 That last line matters on `http://127.0.0.1`. With the default `1` the browser
 never sends the session cookie back, and every page bounces to `/login`.
+
+`DASHBOARD_PASSWORD` must be at least 12 characters and `SESSION_SECRET` at
+least 32; anything shorter (or the shipped defaults) and startup stops with an
+error. Generate the secret with `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 
 Then `start.bat`, or both processes by hand:
 
@@ -100,15 +105,42 @@ CREATE DATABASE vault;
 API_ID=1234567
 API_HASH=your_api_hash
 DATABASE_URL=postgresql+asyncpg://vault:pass@localhost/vault
-DASHBOARD_PASSWORD=pick-something
-SESSION_SECRET=random-32-char-string
+DASHBOARD_PASSWORD=pick-something-long
+SESSION_SECRET=replace-with-32-random-characters
+INTERNAL_TOKEN=shared-token-for-internal-calls
 ```
+
+`INTERNAL_TOKEN` is the shared secret the internal broadcast endpoint expects in
+the `X-Internal-Token` header; leave it empty on a single-process local run and
+set it whenever the panel and the bot are separate processes. `.env.example`
+lists the remaining variables with comments.
 
 Run both processes under a supervisor (`systemd`, `tmux`, `screen`). The first
 login is a one-time interactive step through `login_once.py`; after that the
 session file is reused and `ALLOW_NEW_LOGIN=0` keeps it that way.
 
 Chart.js is vendored in `static/vendor/`, so the panel needs no internet access.
+
+---
+
+## Tests
+
+```bat
+.venv\Scripts\python.exe -m pytest tests -q
+```
+
+The suite runs offline: HTTP calls go through a mock transport and the database
+is a temporary SQLite file, so no API key and no Telegram session is needed. CI
+runs `ruff check .`, `bandit`, `pip-audit --strict` and the same pytest command
+on every push.
+
+---
+
+## Migrations
+
+`migrations/` holds the scripts that bring an existing database up to the
+current schema; a fresh install gets it from `Base.metadata.create_all()` at
+startup. Run the scripts in filename order, with a backup taken first.
 
 ---
 
@@ -156,12 +188,25 @@ Let a cold number live normally for a week or two before attaching a userbot.
 ├── daily_digest.py     # cron entry point, 00:00 TRT
 ├── config.py           # environment variables loader
 ├── database.py         # SQLAlchemy ORM models
+├── timeutil.py         # UTC/TRT conversion and day boundaries
+├── seed_demo.py        # synthetic archive for local runs
+├── seed_recent.py      # last six hours of synthetic messages
 ├── start.bat           # multi-process launcher
 ├── routes/             # auth, messages, dashboard, websocket, digest, profiles
 ├── middleware/         # security headers
+├── migrations/         # schema migration scripts
+├── tests/              # pytest suite (offline)
 ├── templates/          # Jinja2 HTML views
-└── static/             # assets (CSS, JS, logo, screenshots)
+├── static/             # assets (CSS, JS, logo, screenshots)
+├── ruff.toml           # lint configuration
+└── .github/workflows/  # CI (ruff, bandit, pip-audit, pytest)
 ```
+
+---
+
+## License
+
+MIT, see [LICENSE](LICENSE).
 
 ---
 
