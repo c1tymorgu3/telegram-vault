@@ -1,10 +1,10 @@
-"""Migration: digests.chat_id + (chat_id, message_id) unique index.
+"""Migration: digests.chat_id + (chat_id, message_id) unique index + messages.edited_at.
 
-Faz 3.13 / ozet duzeltmeleri:
 - digests.chat_id: ozetler baslikla degil sohbet kimligiyle gruplanacak.
   Mevcut satirlar NULL kalabilir; kod bunlari baslikla eslemeye devam eder.
 - messages (chat_id, message_id) unique index: backfill ile canli dinleyici
   yarisinca cift kayit olusuyordu. Once dupe temizligi, sonra index.
+- messages.edited_at: duzenlenen mesajin yeni icerigi yazilirken zaman damgasi.
 
 Postgres hedef; SQLite'ta da bozulmaz (SQLite ADD COLUMN IF NOT EXISTS
 desteklemez, kolon PRAGMA ile kontrol edilir).
@@ -36,6 +36,8 @@ DEDUPE_SQLITE = ("DELETE FROM messages WHERE id NOT IN "
                  "(SELECT MIN(id) FROM messages GROUP BY chat_id, message_id)")
 UNIQUE_INDEX = ("CREATE UNIQUE INDEX IF NOT EXISTS uq_messages_chat_message "
                 "ON messages (chat_id, message_id)")
+EDITED_COLUMN_PG = "ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMP"
+EDITED_COLUMN = "ALTER TABLE messages ADD COLUMN edited_at TIMESTAMP"
 
 
 async def _has_column(conn, table: str, column: str, dialect: str) -> bool:
@@ -70,6 +72,11 @@ async def main(dry_run: bool = False) -> None:
             steps.append(("digests.chat_id",
                           DIGEST_COLUMN if dialect == "sqlite" else DIGEST_COLUMN_PG))
         steps.append(("ix_digests_chat_window", DIGEST_INDEX))
+
+        # edited_at: MessageEdited handler yazmadan once kolon var olmali.
+        if not await _has_column(conn, "messages", "edited_at", dialect):
+            steps.append(("messages.edited_at",
+                          EDITED_COLUMN if dialect == "sqlite" else EDITED_COLUMN_PG))
 
         dupes = await _count_dupes(conn)
         print(f"Cift mesaj satiri (silinecek): {dupes}")
